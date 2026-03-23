@@ -177,8 +177,8 @@ a:hover{text-decoration:underline;}
 .search-result-path mark{background:rgba(204,0,0,0.3);color:var(--text);padding:0 1px;}
 
 /* MERMAID */
-.mermaid{background:transparent !important;margin:16px 0;text-align:center;}
-.mermaid svg{max-width:100%;}
+.mermaid{background:#111;border:1px solid var(--border);padding:24px;margin:16px 0;text-align:center;overflow-x:auto;max-width:100%;}
+.mermaid svg{max-width:100%;height:auto;}
 
 /* TYPE TABLE */
 .type-table{width:100%;border-collapse:collapse;font-size:12px;margin:16px 0;}
@@ -334,14 +334,31 @@ renderer.codespan = function(obj) {
   return '<code class="inline-code">' + escapeHtml(code) + '</code>';
 };
 renderer.table = function(obj) {
-  var header, body;
-  if (typeof obj === 'object' && obj !== null && obj.header !== undefined) {
-    header = obj.header || '';
-    body = obj.body || '';
-  } else {
-    header = obj || '';
-    body = arguments[1] || '';
+  /* Handle both old marked (header,body strings) and new marked (token object with header[],rows[]) */
+  if (typeof obj === 'object' && obj !== null && Array.isArray(obj.header)) {
+    var h = '<div class="table-wrap"><table class="gorge-table"><thead><tr>';
+    for (var i = 0; i < obj.header.length; i++) {
+      var cell = obj.header[i];
+      var txt = (typeof cell === 'object') ? (cell.text || cell.raw || '') : cell;
+      h += '<th>' + txt + '</th>';
+    }
+    h += '</tr></thead><tbody>';
+    var rows = obj.rows || [];
+    for (var r = 0; r < rows.length; r++) {
+      h += '<tr>';
+      for (var c = 0; c < rows[r].length; c++) {
+        var td = rows[r][c];
+        var val = (typeof td === 'object') ? (td.text || td.raw || '') : td;
+        h += '<td>' + val + '</td>';
+      }
+      h += '</tr>';
+    }
+    h += '</tbody></table></div>';
+    return h;
   }
+  /* Fallback for old marked versions passing strings */
+  var header = (typeof obj === 'string') ? obj : (obj || '');
+  var body = arguments[1] || '';
   return '<div class="table-wrap"><table class="gorge-table"><thead>'+header+'</thead><tbody>'+body+'</tbody></table></div>';
 };
 renderer.link = function(obj) {
@@ -359,7 +376,16 @@ renderer.link = function(obj) {
   return '<a href="'+href+'">'+text+'</a>';
 };
 renderer.blockquote = function(obj) {
-  var q = (typeof obj === 'object' && obj !== null && obj.text !== undefined) ? obj.text : (obj || '');
+  var q;
+  if (typeof obj === 'object' && obj !== null) {
+    q = obj.raw || obj.text || '';
+    /* If obj.tokens exists, parse them */
+    if (obj.tokens && typeof marked.parser === 'function') {
+      try { q = marked.parser(obj.tokens); } catch(e) { q = obj.raw || obj.text || ''; }
+    }
+  } else {
+    q = obj || '';
+  }
   return '<blockquote class="gorge-callout">'+q+'</blockquote>';
 };
 marked.use({ renderer: renderer });
