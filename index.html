@@ -2,432 +2,665 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>GORGE | Vulnerability Database</title>
+<meta name="description" content="GORGE -- Research-grade application security vulnerability database. 22 categories, 133 attack types, 665+ subtypes.">
+<meta property="og:title" content="GORGE -- Application Security Vulnerability Database">
+<meta property="og:description" content="Research-grade application security vulnerability database. 22 categories, 133 attack types, 665+ subtypes.">
+<meta name="theme-color" content="#0d0d0d">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%230d0d0d'/><text x='4' y='24' font-size='20' fill='%23cc0000' font-family='monospace' font-weight='bold'>G</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
 <style>
-:root {
-  --bg-primary: #0d0d0d;
-  --bg-secondary: #1a1a1a;
-  --bg-tertiary: #222222;
-  --bg-input: #111111;
-  --border: #333333;
-  --border-hover: #555555;
-  --text-primary: #ffffff;
-  --text-secondary: #cccccc;
-  --text-muted: #999999;
-  --text-ghost: #666666;
-  --red: #cc0000;
-  --red-hover: #dd0000;
-  --high: #cc5500;
-  --medium: #cc8800;
-  --code-bg: #0a0a0a;
-  --code-border: #cc0000;
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box;}
+:root{
+--bg:#0d0d0d;--red:#cc0000;--card:#1a1a1a;--border:#333333;
+--text:#cccccc;--text-muted:#777777;--text-dim:#555555;
+--high:#cc5500;--medium:#cc8800;--green:#33cc33;
 }
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'JetBrains Mono',monospace;background:var(--bg-primary);color:var(--text-primary);line-height:1.6;overflow-x:hidden}
-.navbar{position:fixed;top:0;left:0;right:0;height:52px;background:var(--bg-primary);border-bottom:1px solid var(--red);display:flex;align-items:center;padding:0 20px;z-index:1000;gap:16px}
-.navbar-brand{color:var(--red);font-size:18px;font-weight:700;letter-spacing:3px;text-decoration:none;cursor:pointer;white-space:nowrap;flex-shrink:0}
-.navbar-search{flex-grow:1;height:32px;background:var(--bg-input);border:1px solid var(--border);color:var(--text-primary);font-family:'JetBrains Mono',monospace;font-size:13px;padding:0 12px;outline:none;border-radius:0}
-.navbar-search:focus{border-color:var(--red)}
-.navbar-search::placeholder{color:var(--text-ghost)}
-.navbar-github{color:var(--text-muted);text-decoration:none;font-size:12px;white-space:nowrap;flex-shrink:0}
-.navbar-github:hover{color:var(--red)}
-.hamburger{display:none;background:none;border:none;color:var(--text-muted);font-size:20px;cursor:pointer;flex-shrink:0}
-.sidebar{position:fixed;top:52px;left:0;width:280px;bottom:0;background:var(--bg-secondary);border-right:1px solid var(--border);overflow-y:auto;z-index:900;padding-bottom:20px}
-.sidebar-filters{display:flex;gap:4px;padding:12px 12px 8px;flex-wrap:wrap}
-.filter-btn{height:28px;padding:0 10px;font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-muted);cursor:pointer;border-radius:0;letter-spacing:.5px}
-.filter-btn:hover{border-color:var(--border-hover);color:var(--text-secondary)}
-.filter-btn.active{background:var(--red);color:var(--text-primary);border-color:var(--red)}
-.sidebar-section-header{font-size:10px;color:var(--text-ghost);text-transform:uppercase;letter-spacing:2px;padding:16px 12px 6px;font-weight:600}
-.sidebar-item{display:flex;align-items:center;height:36px;padding:0 12px;cursor:pointer;text-decoration:none;border-left:2px solid transparent}
-.sidebar-item:hover{background:var(--bg-tertiary)}
-.sidebar-item.active{border-left:2px solid var(--red);background:#1f0000}
-.sidebar-arrow{font-size:10px;color:var(--text-ghost);width:16px;flex-shrink:0;transition:transform .15s;display:inline-block}
-.sidebar-arrow.expanded{transform:rotate(90deg)}
-.sidebar-id{font-size:10px;color:var(--red);margin-right:8px;flex-shrink:0}
-.sidebar-name{font-size:13px;color:var(--text-secondary);flex-grow:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sidebar-badge{font-size:9px;padding:1px 6px;border-radius:2px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;flex-shrink:0;margin-left:4px}
-.sidebar-sub-items{display:none}
-.sidebar-sub-items.expanded{display:block}
-.sidebar-sub-item{display:flex;align-items:center;height:30px;padding:0 12px 0 44px;cursor:pointer;font-size:11px;color:var(--text-muted)}
-.sidebar-sub-item:hover{background:var(--bg-tertiary);color:var(--text-secondary)}
-.sidebar-meta-item{display:flex;align-items:center;height:32px;padding:0 12px 0 16px;cursor:pointer;font-size:12px;color:var(--text-muted)}
-.sidebar-meta-item:hover{background:var(--bg-tertiary);color:var(--text-secondary)}
-.sidebar-meta-item.active{color:var(--red)}
-.main-content{margin-left:280px;margin-top:52px;padding:32px 40px;min-height:calc(100vh - 52px)}
-.badge-critical{background:var(--red);color:#fff;font-size:10px;padding:2px 8px;border-radius:2px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;font-family:'JetBrains Mono',monospace;display:inline-block}
-.badge-high{background:var(--high);color:#fff;font-size:10px;padding:2px 8px;border-radius:2px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;font-family:'JetBrains Mono',monospace;display:inline-block}
-.badge-medium{background:var(--medium);color:#fff;font-size:10px;padding:2px 8px;border-radius:2px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;font-family:'JetBrains Mono',monospace;display:inline-block}
-.stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}
-.stat-card{background:var(--bg-secondary);border:1px solid var(--border);padding:20px;text-align:center}
-.stat-number{font-size:32px;color:var(--red);font-weight:700}
-.stat-label{font-size:12px;color:var(--text-ghost);text-transform:uppercase;letter-spacing:1px;margin-top:4px}
-.filter-row{display:flex;align-items:center;gap:8px;margin-bottom:16px;flex-wrap:wrap}
-.filter-count{font-size:11px;color:var(--text-ghost);margin-left:auto}
-.category-card{background:var(--bg-secondary);border:1px solid var(--border);margin-bottom:8px}
-.category-card-header{display:flex;align-items:center;height:48px;padding:0 16px;cursor:pointer;gap:12px}
-.category-card-header:hover{background:var(--bg-tertiary)}
-.cat-card-id{font-size:11px;color:var(--red);font-weight:600;flex-shrink:0}
-.cat-card-name{font-size:14px;color:var(--text-secondary);flex-grow:1}
-.cat-card-types{font-size:11px;color:var(--text-ghost);flex-shrink:0}
-.cat-card-arrow{font-size:12px;color:var(--text-ghost);flex-shrink:0;transition:transform .15s;display:inline-block}
-.cat-card-arrow.expanded{transform:rotate(90deg)}
-.category-card-body{display:none;background:var(--bg-input);border-top:1px solid var(--bg-tertiary);padding:16px}
-.category-card-body.expanded{display:block}
-.cat-subtype-list{list-style:none}
-.cat-subtype-item{font-size:12px;color:var(--text-muted);padding:4px 0;padding-left:12px}
-.breadcrumb{font-size:12px;color:var(--text-ghost);margin-bottom:16px}
-.breadcrumb a{color:var(--text-ghost);text-decoration:none}
-.breadcrumb a:hover{color:var(--red)}
-.page-header-id{font-size:11px;color:var(--red);font-weight:600;margin-bottom:4px}
-.page-header-title{font-size:28px;color:var(--text-primary);font-weight:700;margin-bottom:8px;line-height:1.3}
-.page-header-badges{display:flex;gap:8px;margin-bottom:24px;flex-wrap:wrap}
-.md-content h1{font-size:24px;color:var(--text-primary);font-weight:700;margin:32px 0 16px;padding-bottom:8px;border-bottom:1px solid var(--border)}
-.md-content h2{font-size:20px;color:var(--text-primary);font-weight:600;margin:28px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--border)}
-.md-content h3{font-size:16px;color:var(--text-secondary);font-weight:600;margin:20px 0 10px}
-.md-content h4{font-size:14px;color:var(--text-secondary);font-weight:600;margin:16px 0 8px}
-.md-content p{margin:10px 0;color:var(--text-secondary);font-size:14px;line-height:1.7}
-.md-content a{color:var(--red);text-decoration:none}
-.md-content a:hover{text-decoration:underline}
-.md-content strong{color:var(--text-primary);font-weight:600}
-.md-content em{color:var(--text-muted)}
-.md-content ul,.md-content ol{margin:10px 0;padding-left:24px;color:var(--text-secondary);font-size:14px}
-.md-content li{margin:4px 0}
-.md-content blockquote{border-left:3px solid var(--red);padding:8px 16px;margin:12px 0;background:var(--bg-secondary);color:var(--text-muted);font-size:13px}
-.md-content pre{background:var(--code-bg);border-left:3px solid var(--code-border);padding:16px;margin:12px 0;overflow-x:auto;font-size:13px;line-height:1.5;position:relative}
-.md-content pre code{background:none;border:none;padding:0;color:var(--text-secondary);font-family:'JetBrains Mono',monospace;font-size:13px}
-.md-content code{background:var(--bg-input);color:var(--red);border:1px solid var(--border);padding:1px 6px;font-family:'JetBrains Mono',monospace;font-size:12px}
-.md-content table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13px}
-.md-content th{background:var(--bg-input);color:var(--text-ghost);text-align:left;padding:8px 12px;border:1px solid var(--border);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.5px}
-.md-content td{padding:8px 12px;border:1px solid var(--border);color:var(--text-secondary)}
-.md-content tr:hover td{background:var(--bg-secondary)}
-.md-content hr{border:none;border-top:1px solid var(--border);margin:24px 0}
-.md-content img{display:none}
-.md-content details{margin:12px 0;border:1px solid var(--border)}
-.md-content summary{padding:10px 16px;cursor:pointer;background:var(--bg-secondary);color:var(--text-secondary);font-size:13px;font-weight:600}
-.md-content summary:hover{background:var(--bg-tertiary)}
-.md-content details[open] summary{border-bottom:1px solid var(--border)}
-.md-content .mermaid{background:var(--bg-primary);border:1px solid var(--border);padding:16px;margin:12px 0;text-align:center}
-.copy-btn{position:absolute;top:8px;right:8px;background:var(--bg-secondary);border:1px solid var(--border);color:var(--text-muted);font-family:'JetBrains Mono',monospace;font-size:10px;padding:2px 8px;cursor:pointer;border-radius:4px}
-.copy-btn:hover{border-color:var(--red);color:var(--red)}
-.search-header{font-size:14px;color:var(--text-muted);margin-bottom:16px}
-.search-result-group{margin-bottom:20px}
-.search-result-group-title{font-size:11px;color:var(--text-ghost);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid var(--border)}
-.search-result{padding:10px 12px;cursor:pointer;border-left:2px solid transparent;margin-bottom:4px}
-.search-result:hover{background:var(--bg-secondary);border-left-color:var(--red)}
-.search-result-name{font-size:14px;color:var(--text-secondary);margin-bottom:2px}
-.search-result-path{font-size:11px;color:var(--text-ghost)}
-mark{background:#440000;color:var(--red);padding:0 2px}
+html,body{background:var(--bg);color:var(--text);font-family:'JetBrains Mono',monospace;font-size:14px;line-height:1.6;overflow-x:hidden;height:100%;}
+a{color:var(--red);text-decoration:none;}
+a:hover{text-decoration:underline;}
+::selection{background:var(--red);color:#fff;}
+::-webkit-scrollbar{width:8px;}
+::-webkit-scrollbar-track{background:var(--bg);}
+::-webkit-scrollbar-thumb{background:var(--border);}
+::-webkit-scrollbar-thumb:hover{background:var(--text-muted);}
+
+/* NAVBAR */
+#navbar{position:fixed;top:0;left:0;right:0;height:52px;background:var(--bg);border-bottom:1px solid var(--red);display:flex;align-items:center;padding:0 16px;z-index:999;}
+.nav-brand{font-size:16px;font-weight:700;color:var(--red);cursor:pointer;letter-spacing:1px;margin-right:auto;}
+.nav-brand:hover{text-decoration:none;}
+#searchWrap{position:relative;margin-right:12px;}
+#searchInput{background:var(--card);border:1px solid var(--border);color:var(--text);font-family:'JetBrains Mono',monospace;font-size:12px;padding:6px 10px 6px 28px;width:220px;outline:none;}
+#searchInput:focus{border-color:var(--red);}
+#searchInput::placeholder{color:var(--text-dim);}
+.search-icon{position:absolute;left:8px;top:50%;transform:translateY(-50%);color:var(--text-dim);font-size:12px;pointer-events:none;}
+#hamburger{display:none;flex-direction:column;gap:4px;cursor:pointer;padding:4px;margin-right:12px;}
+#hamburger span{width:18px;height:2px;background:var(--red);}
+
+/* SIDEBAR */
+#sidebar{position:fixed;top:52px;left:0;bottom:0;width:280px;background:var(--card);border-right:1px solid var(--border);overflow-y:auto;z-index:998;transition:transform 0.2s;}
+.sidebar-section-title{font-size:11px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;padding:16px 16px 8px;user-select:none;}
+.sidebar-filter-row{display:flex;gap:4px;padding:0 12px 12px;flex-wrap:wrap;}
+.filter-btn{background:transparent;border:1px solid var(--border);color:var(--text-muted);font-family:'JetBrains Mono',monospace;font-size:10px;padding:2px 8px;cursor:pointer;border-radius:2px;}
+.filter-btn:hover{border-color:var(--text-muted);}
+.filter-btn.active{border-color:var(--red);color:var(--red);}
+.sidebar-cat-group{border-bottom:1px solid var(--border);}
+.sidebar-item{display:flex;align-items:center;gap:6px;padding:8px 12px;cursor:pointer;font-size:12px;user-select:none;transition:background 0.1s;}
+.sidebar-item:hover{background:rgba(204,0,0,0.08);}
+.sidebar-item.active{background:rgba(204,0,0,0.12);border-left:2px solid var(--red);}
+.sidebar-arrow{font-size:8px;color:var(--text-dim);transition:transform 0.15s;display:inline-block;width:12px;text-align:center;}
+.sidebar-arrow.expanded{transform:rotate(90deg);}
+.sidebar-id{color:var(--text-dim);font-size:10px;min-width:48px;}
+.sidebar-name{flex:1;color:var(--text);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.sidebar-badge{font-size:9px;padding:1px 5px;border-radius:2px;font-weight:600;letter-spacing:0.5px;}
+.badge-critical{background:var(--red);color:#fff;font-size:9px;padding:1px 5px;border-radius:2px;font-weight:600;letter-spacing:0.5px;}
+.badge-high{background:var(--high);color:#fff;font-size:9px;padding:1px 5px;border-radius:2px;font-weight:600;letter-spacing:0.5px;}
+.badge-medium{background:var(--medium);color:#fff;font-size:9px;padding:1px 5px;border-radius:2px;font-weight:600;letter-spacing:0.5px;}
+.sidebar-sub-items{max-height:0;overflow:hidden;transition:max-height 0.2s ease-out;background:rgba(0,0,0,0.2);}
+.sidebar-sub-items.expanded{max-height:500px;}
+.sidebar-sub-item{font-size:11px;color:var(--text-muted);padding:4px 12px 4px 36px;cursor:default;border-left:1px solid var(--border);margin-left:12px;}
+.sidebar-meta{border-top:1px solid var(--border);margin-top:8px;padding-top:8px;}
+.sidebar-meta-item{display:block;font-size:11px;color:var(--text-muted);padding:6px 16px;cursor:pointer;user-select:none;transition:background 0.1s;}
+.sidebar-meta-item:hover{background:rgba(204,0,0,0.08);color:var(--text);}
+.sidebar-meta-item.active{color:var(--red);border-left:2px solid var(--red);}
+
+/* MAIN CONTENT */
+#main-content{margin-left:280px;margin-top:52px;padding:24px 32px 60px;min-height:calc(100vh - 52px);}
+
+/* STATS */
+.stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px;}
+.stat-card{background:var(--card);border:1px solid var(--border);padding:16px;text-align:center;}
+.stat-number{font-size:28px;font-weight:700;color:var(--red);}
+.stat-label{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-top:4px;}
+
+/* FILTER ROW */
+.home-filter-row{display:flex;align-items:center;gap:8px;margin-bottom:20px;flex-wrap:wrap;}
+.home-filter-row .filter-btn{font-size:11px;padding:4px 12px;}
+.filter-count{font-size:11px;color:var(--text-dim);margin-left:auto;}
+
+/* CATEGORY CARDS */
+.category-card{background:var(--card);border:1px solid var(--border);margin-bottom:8px;transition:border-color 0.1s;}
+.category-card:hover{border-color:var(--text-dim);}
+.category-card-header{display:flex;align-items:center;gap:8px;padding:12px 16px;cursor:pointer;user-select:none;}
+.cat-card-id{font-size:11px;color:var(--text-dim);min-width:50px;}
+.cat-card-name{flex:1;font-size:13px;font-weight:500;color:var(--text);}
+.cat-card-types{font-size:11px;color:var(--text-dim);margin-left:8px;}
+.cat-card-arrow{font-size:10px;color:var(--text-dim);transition:transform 0.15s;display:inline-block;}
+.cat-card-arrow.expanded{transform:rotate(90deg);}
+.cat-card-nav{font-size:11px;padding:4px 12px;border:1px solid var(--red);color:var(--red);cursor:pointer;background:transparent;font-family:'JetBrains Mono',monospace;border-radius:4px;margin-left:8px;white-space:nowrap;}
+.cat-card-nav:hover{background:var(--red);color:#fff;}
+.category-card-body{max-height:0;overflow:hidden;transition:max-height 0.25s ease-out;}
+.category-card-body.expanded{max-height:600px;}
+.cat-subtype-list{list-style:none;padding:8px 16px 12px;}
+.cat-subtype-item{font-size:11px;color:var(--text-muted);padding:2px 0;border-left:1px solid var(--border);padding-left:12px;margin-left:4px;}
+
+/* BREADCRUMB */
+.breadcrumb{font-size:12px;color:var(--text-dim);margin-bottom:16px;}
+.breadcrumb a{color:var(--red);text-decoration:none;}
+.breadcrumb a:hover{text-decoration:underline;}
+
+/* PAGE HEADER */
+.page-header-id{font-size:32px;font-weight:700;color:var(--text-dim);letter-spacing:2px;}
+.page-header-title{font-size:22px;font-weight:600;color:var(--text);margin:4px 0 12px;}
+.page-header-badges{display:flex;gap:8px;margin-bottom:24px;}
+
+/* RESEARCH BANNER */
+.research-banner{border-left:3px solid var(--red);background:var(--card);padding:12px 16px;margin:20px 0;font-size:12px;color:var(--text-muted);}
+.research-banner strong{color:var(--text);}
+
+/* MARKDOWN CONTENT */
+.md-content{line-height:1.7;}
+.md-content h1{font-size:22px;font-weight:700;color:var(--text);margin:28px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--border);}
+.md-content h2{font-size:18px;font-weight:600;color:var(--text);margin:24px 0 10px;}
+.md-content h3{font-size:15px;font-weight:600;color:var(--text);margin:20px 0 8px;}
+.md-content h4{font-size:13px;font-weight:600;color:var(--text-muted);margin:16px 0 6px;}
+.md-content p{margin:8px 0;color:var(--text);}
+.md-content ul,
+.md-content ol{margin:8px 0 8px 24px;}
+.md-content li{margin:3px 0;color:var(--text);}
+.md-content hr{border:none;border-top:1px solid var(--border);margin:20px 0;}
+.md-content strong{color:#eee;}
+.md-content em{color:var(--text-muted);font-style:italic;}
+.md-content img{max-width:100%;height:auto;}
+
+/* CODE */
+.code-block{background:#111;border:1px solid var(--border);margin:12px 0;position:relative;}
+.code-header{display:flex;justify-content:space-between;align-items:center;padding:6px 12px;background:rgba(255,255,255,0.03);border-bottom:1px solid var(--border);}
+.code-lang{font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;}
+.copy-btn{background:transparent;border:1px solid var(--border);color:var(--text-dim);font-family:'JetBrains Mono',monospace;font-size:10px;padding:2px 8px;cursor:pointer;border-radius:4px;}
+.copy-btn:hover{border-color:var(--text-muted);color:var(--text-muted);}
+.copy-btn.copied{border-color:var(--green);color:var(--green);}
+.code-block pre{margin:0;padding:12px;overflow-x:auto;}
+.code-block code{font-size:12px;font-family:'JetBrains Mono',monospace;line-height:1.5;}
+.inline-code{background:rgba(204,0,0,0.1);color:#e66;padding:1px 5px;font-size:12px;font-family:'JetBrains Mono',monospace;border-radius:2px;}
+
+/* TABLES */
+.table-wrap{overflow-x:auto;margin:12px 0;}
+.gorge-table{width:100%;border-collapse:collapse;font-size:12px;}
+.gorge-table th{background:var(--card);border:1px solid var(--border);padding:8px 12px;text-align:left;font-weight:600;color:var(--text);}
+.gorge-table td{border:1px solid var(--border);padding:8px 12px;color:var(--text);}
+.gorge-table tr:hover td{background:rgba(204,0,0,0.04);}
+
+/* CALLOUTS */
+.gorge-callout{border-left:3px solid var(--red);background:var(--card);padding:12px 16px;margin:12px 0;font-size:13px;color:var(--text-muted);}
+.gorge-callout p{margin:4px 0;}
+
+/* COLLAPSIBLE */
+.gorge-collapsible{background:var(--card);border:1px solid var(--border);margin:8px 0;}
+.gorge-collapsible-trigger{padding:10px 16px;cursor:pointer;font-size:13px;font-weight:500;color:var(--text);user-select:none;}
+.gorge-collapsible-trigger:hover{background:rgba(204,0,0,0.05);}
+.gorge-collapsible[open] .gorge-collapsible-trigger{border-bottom:1px solid var(--border);}
+.gorge-collapsible > :not(summary){padding:12px 16px;}
+
+/* CENTER BLOCK */
+.center-block{text-align:center;margin:16px 0;}
+
+/* SEARCH */
+.search-header{font-size:16px;font-weight:600;margin-bottom:16px;color:var(--text);}
+.search-header mark{background:var(--red);color:#fff;padding:0 3px;}
+.search-result-group{margin-bottom:24px;}
+.search-result-group-title{font-size:11px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid var(--border);}
+.search-result{padding:10px 12px;border:1px solid var(--border);background:var(--card);margin-bottom:4px;cursor:pointer;transition:border-color 0.1s;}
+.search-result:hover{border-color:var(--red);}
+.search-result-name{font-size:13px;color:var(--text);margin-bottom:2px;}
+.search-result-name mark{background:var(--red);color:#fff;padding:0 2px;}
+.search-result-path{font-size:11px;color:var(--text-dim);}
+.search-result-path mark{background:rgba(204,0,0,0.3);color:var(--text);padding:0 1px;}
+
+/* MERMAID */
+.mermaid{background:transparent !important;margin:16px 0;text-align:center;}
+.mermaid svg{max-width:100%;}
+
+/* TYPE TABLE */
+.type-table{width:100%;border-collapse:collapse;font-size:12px;margin:16px 0;}
+.type-table th{background:var(--card);border:1px solid var(--border);padding:6px 10px;text-align:left;font-weight:600;color:var(--text-dim);font-size:10px;text-transform:uppercase;letter-spacing:0.5px;}
+.type-table td{border:1px solid var(--border);padding:6px 10px;color:var(--text);}
+.type-table tr:hover td{background:rgba(204,0,0,0.04);}
+
+/* MOBILE */
 @media(max-width:768px){
-  .hamburger{display:block}
-  .sidebar{transform:translateX(-100%);transition:transform .2s}
-  .sidebar.open{transform:translateX(0)}
-  .main-content{margin-left:0;padding:16px}
-  .stats-row{grid-template-columns:repeat(2,1fr)}
-  .navbar-search{min-width:0}
+  #sidebar{transform:translateX(-280px);z-index:1000;}
+  #sidebar.open{transform:translateX(0);}
+  #main-content{margin-left:0 !important;}
+  #hamburger{display:flex;}
+  #searchInput{width:140px;}
+  .stats-row{grid-template-columns:repeat(2,1fr);}
 }
-::-webkit-scrollbar{width:6px}
-::-webkit-scrollbar-track{background:var(--bg-primary)}
-::-webkit-scrollbar-thumb{background:var(--border)}
-::-webkit-scrollbar-thumb:hover{background:var(--border-hover)}
+@media(max-width:480px){
+  .stats-row{grid-template-columns:1fr 1fr;}
+  .category-card-header{flex-wrap:wrap;gap:4px;}
+  #searchInput{width:100px;}
+}
 </style>
 </head>
 <body>
-<nav class="navbar">
-  <button class="hamburger" onclick="toggleSidebar()">&#9776;</button>
-  <a class="navbar-brand" onclick="navigateTo('home')">GORGE</a>
-  <input class="navbar-search" id="searchInput" type="text" placeholder="Search vulnerabilities, techniques, tools...">
-  <a class="navbar-github" href="https://github.com/Cy-S3c/Gorge" target="_blank" rel="noopener">GitHub &#8599;</a>
-</nav>
-<aside class="sidebar" id="sidebar">
-  <div class="sidebar-filters" id="sidebarFilters">
-    <button class="filter-btn active" data-severity="all" onclick="filterSeverity('all',this)">All</button>
-    <button class="filter-btn" data-severity="CRITICAL" onclick="filterSeverity('CRITICAL',this)">Critical</button>
-    <button class="filter-btn" data-severity="HIGH" onclick="filterSeverity('HIGH',this)">High</button>
-    <button class="filter-btn" data-severity="MEDIUM" onclick="filterSeverity('MEDIUM',this)">Medium</button>
+
+<nav id="navbar">
+  <div id="hamburger" onclick="toggleSidebar()"><span></span><span></span><span></span></div>
+  <a class="nav-brand" onclick="navigateTo('home')">GORGE</a>
+  <div id="searchWrap">
+    <span class="search-icon">/</span>
+    <input type="text" id="searchInput" placeholder="Search vulnerabilities..." spellcheck="false" autocomplete="off">
   </div>
-  <div class="sidebar-section-header">Web Application</div>
+</nav>
+
+<aside id="sidebar">
+  <div class="sidebar-section-title">Severity Filter</div>
+  <div class="sidebar-filter-row">
+    <button class="filter-btn active" onclick="filterSeverity('all',this)">All</button>
+    <button class="filter-btn" onclick="filterSeverity('CRITICAL',this)">Critical</button>
+    <button class="filter-btn" onclick="filterSeverity('HIGH',this)">High</button>
+    <button class="filter-btn" onclick="filterSeverity('MEDIUM',this)">Medium</button>
+  </div>
+  <div class="sidebar-section-title">Categories</div>
   <div id="sidebarCategories"></div>
-  <div class="sidebar-section-header">Resources</div>
-  <div class="sidebar-meta-item" onclick="navigateTo('tools')">Tools Index</div>
-  <div class="sidebar-meta-item" onclick="navigateTo('labs')">Lab Environments</div>
-  <div class="sidebar-section-header">Meta</div>
-  <div class="sidebar-meta-item" onclick="navigateTo('taxonomy')">Taxonomy</div>
-  <div class="sidebar-meta-item" onclick="navigateTo('about')">About</div>
-  <div class="sidebar-meta-item" onclick="navigateTo('changelog')">Changelog</div>
+  <div class="sidebar-meta">
+    <div class="sidebar-meta-item" onclick="navigateTo('taxonomy')">Taxonomy</div>
+    <div class="sidebar-meta-item" onclick="navigateTo('tools')">Tools Index</div>
+    <div class="sidebar-meta-item" onclick="navigateTo('labs')">Lab Environments</div>
+    <div class="sidebar-meta-item" onclick="navigateTo('about')">About</div>
+    <div class="sidebar-meta-item" onclick="navigateTo('changelog')">Changelog</div>
+  </div>
 </aside>
-<main class="main-content" id="mainContent"></main>
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+
+<main id="main-content">
+  <div id="mainContent"></div>
+</main>
+
 <script>
 (function(){
-var GORGE = {"meta": {"version": "0.1.0", "totalCategories": 22, "totalTypes": 133, "totalSubtypes": 665, "scope": "WEB APP"}, "categories": [{"id": "CAT-01", "slug": "cat-01", "name": "Injection Attacks", "severity": "CRITICAL", "typeCount": 15, "types": ["SQL Injection", "NoSQL Injection", "OS Command Injection", "SSTI", "LDAP Injection", "XPath Injection", "EL / OGNL Injection", "XML Injection", "CRLF / HTTP Header Injection", "Code Injection", "ORM Injection", "JSON Injection", "HTML Injection", "SMTP / Email Header Injection", "Prompt Injection"], "content": "<div align=\"center\">\n\n![CAT-01](https://img.shields.io/badge/CAT--01-Injection%20Attacks-cc0000?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n![CRITICAL](https://img.shields.io/badge/Severity-CRITICAL-cc0000?style=flat-square&labelColor=1a1a1a)\n![Types](https://img.shields.io/badge/Attack%20Types-15-333333?style=flat-square&labelColor=1a1a1a)\n![Subtypes](https://img.shields.io/badge/Subtypes-90%2B-555555?style=flat-square&labelColor=1a1a1a)\n![OWASP](https://img.shields.io/badge/OWASP-A05%3A2025-222222?style=flat-square&labelColor=cc0000)\n![CWE](https://img.shields.io/badge/CWE-89%20%7C%2090%20%7C%2078%20%7C%2094%20%7C%20917-333333?style=flat-square&labelColor=1a1a1a)\n\n# CAT-01: Injection Attacks\n\n> **Domain:** Web Application · **Phase:** 1 · **CAPEC Category:** Inject Unexpected Items\n\n---\n\n## Category Overview\n\nInjection attacks occur when untrusted, attacker-controlled data is sent to an interpreter — a database engine, OS shell, LDAP server, template engine, XML parser, or any other component that evaluates input as code or a command. The interpreter cannot distinguish between the intended instruction and the injected content, executing both.\n\nThe fundamental precondition for all injection vulnerabilities is the same: **user-controlled data is concatenated into a query, command, or expression without sufficient sanitization, parameterization, or contextual escaping.** The interpreter is working as designed — the vulnerability is in how the application constructs the input to that interpreter.\n\nInjection vulnerabilities appear in virtually every interpreted technology layer of a web application: the database tier (SQL, NoSQL, ORM), the server OS (command injection), directory services (LDAP), XML/XPath processing, server-side templating, expression language evaluation, and increasingly in AI/LLM pipelines (prompt injection). The impact ranges from data exfiltration and authentication bypass to full remote code execution and complete system compromise.\n\n**Why it persists:** Developer trust of user input remains pervasive in legacy codebases, ORMs create false confidence, and WAF bypass techniques continuously outpace signature-based defenses. Injection was #1 on the OWASP Top 10 for over a decade and remains in the top 5 in 2025.\n\n---\n\n## Attack Surface Map\n\n```mermaid\ngraph TD\n    USER[User / Attacker Input] --> FORMS[HTML Forms]\n    USER --> PARAMS[URL Parameters]\n    USER --> HEADERS[HTTP Headers]\n    USER --> COOKIES[Cookies]\n    USER --> JSON[JSON / XML Body]\n    USER --> WSOCK[WebSocket Messages]\n\n    FORMS & PARAMS & HEADERS & COOKIES & JSON & WSOCK --> APP[Web Application]\n\n    APP --> SQL[SQL Engine]\n    APP --> NOSQL[NoSQL Engine]\n    APP --> OS[Operating System Shell]\n    APP --> LDAP[LDAP Directory]\n    APP --> XPATH[XPath / XML Parser]\n    APP --> TMPL[Template Engine]\n    APP --> EL[Expression Language]\n    APP --> LLM[LLM / AI Model]\n\n    SQL --> |SQLi| SQLI[Data theft · Auth bypass · RCE via xp_cmdshell]\n    NOSQL --> |NoSQLi| NOSQLI[Auth bypass · Data exfiltration]\n    OS --> |CMDi| CMDI[RCE · Reverse shell · Full system compromise]\n    LDAP --> |LDAPi| LDAPI[Auth bypass · Directory enumeration]\n    XPATH --> |XPathi| XPATHI[Data extraction · Auth bypass]\n    TMPL --> |SSTI| SSTII[RCE · Config read · Reverse shell]\n    EL --> |ELi| ELI[RCE via OGNL · Spring SpEL]\n    LLM --> |Prompt Inj| PROMPTI[Goal hijack · Data exfiltration · Jailbreak]\n```\n\n---\n\n## Attack Types in This Category\n\n| ID | Attack Type | Key CWEs | Subtypes | Severity | Coverage |\n|----|------------|---------|---------|---------|---------|\n| [SQLi](./SQLi/README) | SQL Injection | CWE-89 | 12 | ![CRITICAL](https://img.shields.io/badge/-CRITICAL-cc0000?style=flat-square) | 🟡 In Progress |\n| [NoSQLi](./NoSQLi/README) | NoSQL Injection | CWE-943 | 5 | ![CRITICAL](https://img.shields.io/badge/-CRITICAL-cc0000?style=flat-square) | 🔲 Planned |\n| [Command-Injection](./Command-Injection/README) | OS Command Injection | CWE-78 | 5 | ![CRITICAL](https://img.shields.io/badge/-CRITICAL-cc0000?style=flat-square) | 🔲 Planned |\n| [SSTI](./SSTI/README) | Server-Side Template Injection | CWE-94, CWE-1336 | 9 | ![CRITICAL](https://img.shields.io/badge/-CRITICAL-cc0000?style=flat-square) | 🔲 Planned |\n| [LDAP-Injection](./LDAP-Injection/README) | LDAP Injection | CWE-90 | 4 | ![HIGH](https://img.shields.io/badge/-HIGH-cc5500?style=flat-square) | 🔲 Planned |\n| [XPath-Injection](./XPath-Injection/README) | XPath Injection | CWE-643 | 3 | ![HIGH](https://img.shields.io/badge/-HIGH-cc5500?style=flat-square) | 🔲 Planned |\n| [EL-OGNL](./EL-OGNL/README) | EL / OGNL Injection | CWE-917 | 5 | ![CRITICAL](https://img.shields.io/badge/-CRITICAL-cc0000?style=flat-square) | 🔲 Planned |\n| [XML-Injection](./XML-Injection/README) | XML Injection | CWE-91 | 4 | ![HIGH](https://img.shields.io/badge/-HIGH-cc5500?style=flat-square) | 🔲 Planned |\n| [CRLF-Injection](./CRLF-Injection/README) | CRLF / HTTP Header Injection | CWE-93, CWE-113 | 4 | ![HIGH](https://img.shields.io/badge/-HIGH-cc5500?style=flat-square) | 🔲 Planned |\n| [Code-Injection](./Code-Injection/README) | Code Injection | CWE-94, CWE-95 | 5 | ![CRITICAL](https://img.shields.io/badge/-CRITICAL-cc0000?style=flat-square) | 🔲 Planned |\n| [ORM-Injection](./ORM-Injection/README) | ORM Injection | CWE-89 | 4 | ![HIGH](https://img.shields.io/badge/-HIGH-cc5500?style=flat-square) | 🔲 Planned |\n| [JSON-Injection](./JSON-Injection/README) | JSON Injection | CWE-74 | 4 | ![MEDIUM](https://img.shields.io/badge/-MEDIUM-cc8800?style=flat-square) | 🔲 Planned |\n| [HTML-Injection](./HTML-Injection/README) | HTML Injection | CWE-79, CWE-80 | 3 | ![MEDIUM](https://img.shields.io/badge/-MEDIUM-cc8800?style=flat-square) | 🔲 Planned |\n| [SMTP-Injection](./SMTP-Injection/README) | SMTP / Email Header Injection | CWE-93 | 4 | ![MEDIUM](https://img.shields.io/badge/-MEDIUM-cc8800?style=flat-square) | 🔲 Planned |\n| [Prompt-Injection](./Prompt-Injection/README) | AI / LLM Prompt Injection | CWE-1427 | 6 | ![HIGH](https://img.shields.io/badge/-HIGH-cc5500?style=flat-square) | 🔲 Planned |\n\n---\n\n## Universal Injection Pattern\n\nAll injection attacks share the same structural vulnerability:\n\n```\nVULNERABLE:\nquery = \"SELECT * FROM users WHERE id = \" + userInput\n→ userInput = \"1 OR 1=1--\"\n→ query = \"SELECT * FROM users WHERE id = 1 OR 1=1--\"  ← Logic altered\n\nSECURE:\nquery = \"SELECT * FROM users WHERE id = ?\"\nexecute(query, [userInput])\n→ userInput is data, never code — interpreter separation maintained\n```\n\nThe specific interpreter (SQL, OS, LDAP, template) changes the syntax. The vulnerability class is identical.\n\n---\n\n## Detection Heuristics (All Injection Types)\n\n| Probe Type | Payload Pattern | Indicator |\n|-----------|----------------|-----------|\n| Error-based | `'`, `\"`, `)`, `` ` `` | Interpreter error in response |\n| Boolean differential | `AND 1=1`, `AND 1=2` | Different response content |\n| Time-based | `SLEEP(5)`, `WAITFOR DELAY` | Delayed response |\n| Out-of-band | DNS/HTTP callback payloads | External request received |\n| Syntax probe | `{{7*7}}`, `${7*7}`, `<%= 7*7 %>` | `49` in response (SSTI/EL) |\n\n---\n\n## Common Attack Surface\n\n**High-Risk Input Vectors for Injection:**\n\n```\nGET /search?q=[INJECT]\nGET /item?id=[INJECT]\nPOST /login  →  username=[INJECT] & password=[INJECT]\nPOST /api/v1/users  →  {\"filter\": \"[INJECT]\"}\nCookie: session=[INJECT]\nUser-Agent: [INJECT]\nX-Forwarded-For: [INJECT]\nReferer: [INJECT]\n```\n\n**Second-Order Injection Contexts:**\nData stored in one request and executed in another. Registration forms, profile fields, import features, and log viewers are common second-order injection sinks.\n\n---\n\n## Injection by Interpreter\n\n<details>\n<summary><b>SQL — Database Engines</b></summary>\n\n| Engine | Characteristic Syntax | Time Delay | Comment |\n|--------|----------------------|-----------|---------|\n| MySQL | `SLEEP(N)`, `-- -` | `SLEEP(5)` | `#` comment also works |\n| PostgreSQL | `pg_sleep(N)`, `--` | `pg_sleep(5)` | Stacked queries with `;` |\n| MSSQL | `WAITFOR DELAY`, `--` | `WAITFOR DELAY '0:0:5'` | `xp_cmdshell` for RCE |\n| Oracle | `dbms_pipe.receive_message` | `dbms_pipe.receive_message(('a'),5)` | No stacked queries |\n| SQLite | `randomblob(N)` | `randomblob(500000000)` | Limited OOB options |\n\n</details>\n\n<details>\n<summary><b>SSTI — Template Engines by Language</b></summary>\n\n| Engine | Language | Probe | RCE Payload Pattern |\n|--------|----------|-------|-------------------|\n| Jinja2 | Python | `{{7*7}}` | `{{''.__class__.__mro__[1].__subclasses__()}}` |\n| Twig | PHP | `{{7*7}}` | `{{_self.env.registerUndefinedFilterCallback('exec')}}` |\n| Freemarker | Java | `${7*7}` | `<#assign ex=\"freemarker.template.utility.Execute\"?new()>` |\n| Velocity | Java | `#set($x=7*7)$x` | Reflection-based RCE |\n| Smarty | PHP | `{php}phpinfo();{/php}` | Direct PHP execution (legacy) |\n| Pebble | Java | `{{7*7}}` | Java reflection chains |\n| ERB | Ruby | `<%= 7*7 %>` | `<%= system('id') %>` |\n| Handlebars | Node.js | `{{7*7}}` | Prototype pollution chains |\n\n</details>\n\n---\n\n## Prevention — Universal Principles\n\n1. **Parameterized Queries / Prepared Statements** — for all database interactions\n2. **Contextual Output Encoding** — HTML, JS, URL, CSS context-aware escaping\n3. **Input Validation** — allowlist approach for known-good values\n4. **Principle of Least Privilege** — database accounts with minimal permissions\n5. **WAF as defense-in-depth** — never as primary control\n6. **ORM safely** — avoid raw query methods (`executeQuery`, `$where`, `eval`)\n7. **Sandboxed template engines** — no user-controlled template content\n\n---\n\n## References\n\n### Primary Standards\n- [OWASP — Injection (A05:2025)](https://owasp.org/Top10/2025/A05_2025-Injection/)\n- [OWASP WSTG — Testing for Injection](https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/)\n- [CWE-74: Improper Neutralization of Special Elements in Output](https://cwe.mitre.org/data/definitions/74.html)\n- [CAPEC-152: Inject Unexpected Items](https://capec.mitre.org/data/definitions/152.html)\n\n### Deep Research\n- [PortSwigger — SQL Injection](https://portswigger.net/web-security/sql-injection)\n- [PortSwigger — Server-Side Template Injection](https://portswigger.net/research/server-side-template-injection)\n- [PayloadsAllTheThings — Injection](https://github.com/swisskyrepo/PayloadsAllTheThings)\n"}, {"id": "CAT-02", "slug": "cat-02", "name": "Broken Access Control", "severity": "CRITICAL", "typeCount": 8, "types": ["IDOR", "Path / Directory Traversal", "Privilege Escalation", "Forced Browsing", "Missing Function Level Access Control", "Parameter Tampering", "Mass Assignment", "Open Redirect"], "content": "<div align=\"center\">\n\n![CAT-02](https://img.shields.io/badge/CAT-02-Broken%20Access%20Control-cc0000?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n![Severity](https://img.shields.io/badge/Severity-CRITICAL-cc0000?style=flat-square&labelColor=1a1a1a)\n![OWASP](https://img.shields.io/badge/OWASP-A01%3A2025-222222?style=flat-square&labelColor=cc0000)\n![Status](https://img.shields.io/badge/Status-Planned-555555?style=flat-square&labelColor=1a1a1a)\n\n# CAT-02: Broken Access Control\n\n> **Domain:** Web Application · **Status:** 🔲 Research Queued\n\n---\n\n## Overview\n\n> ⚠️ **This category page is queued for full research.** The taxonomy and attack type structure are confirmed.\n> Full content — techniques, payloads, tools, and references — will be added in sequence.\n>\n> See the [research roadmap in CHANGELOG](../../CHANGELOG) for planned order.\n\n---\n\n## Attack Types (Confirmed Taxonomy)\n\n> See [Full Taxonomy](../../Taxonomy) for all confirmed subtypes under this category.\n\n---\n\n[← Web Application Overview](../README) · [← Home](../../Home)\n"}, {"id": "CAT-03", "slug": "cat-03", "name": "XSS & Client-Side", "severity": "HIGH", "typeCount": 10, "types": ["Reflected XSS", "Stored XSS", "DOM-Based XSS", "Blind XSS", "Mutation XSS (mXSS)", "Universal XSS (UXSS)", "CSP Bypass", "Prototype Pollution to XSS", "Dangling Markup", "XSSI"], "content": "<div align=\"center\">\n\n![CAT-03](https://img.shields.io/badge/CAT-03-XSS%20Client%20Side-cc5500?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n![Severity](https://img.shields.io/badge/Severity-HIGH-cc5500?style=flat-square&labelColor=1a1a1a)\n![OWASP](https://img.shields.io/badge/OWASP-A05%3A2025-222222?style=flat-square&labelColor=cc0000)\n![Status](https://img.shields.io/badge/Status-Planned-555555?style=flat-square&labelColor=1a1a1a)\n\n# CAT-03: XSS Client Side\n\n> **Domain:** Web Application · **Status:** 🔲 Research Queued\n\n---\n\n## Overview\n\n> ⚠️ **This category page is queued for full research.** The taxonomy and attack type structure are confirmed.\n> Full content — techniques, payloads, tools, and references — will be added in sequence.\n>\n> See the [research roadmap in CHANGELOG](../../CHANGELOG) for planned order.\n\n---\n\n## Attack Types (Confirmed Taxonomy)\n\n> See [Full Taxonomy](../../Taxonomy) for all confirmed subtypes under this category.\n\n---\n\n[← Web Application Overview](../README) · [← Home](../../Home)\n"}, {"id": "CAT-04", "slug": "cat-04", "name": "Authentication & Session", "severity": "CRITICAL", "typeCount": 7, "types": ["Credential Attacks", "Session Hijacking", "JWT Attacks", "Password Reset Attacks", "MFA Bypass", "Authentication Bypass", "Account Enumeration"], "content": "<div align=\"center\">\n\n![CAT-04](https://img.shields.io/badge/CAT-04-Authentication%20Session-cc0000?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n![Severity](https://img.shields.io/badge/Severity-CRITICAL-cc0000?style=flat-square&labelColor=1a1a1a)\n![OWASP](https://img.shields.io/badge/OWASP-A07%3A2025-222222?style=flat-square&labelColor=cc0000)\n![Status](https://img.shields.io/badge/Status-Planned-555555?style=flat-square&labelColor=1a1a1a)\n\n# CAT-04: Authentication Session\n\n> **Domain:** Web Application · **Status:** 🔲 Research Queued\n\n---\n\n## Overview\n\n> ⚠️ **This category page is queued for full research.** The taxonomy and attack type structure are confirmed.\n> Full content — techniques, payloads, tools, and references — will be added in sequence.\n>\n> See the [research roadmap in CHANGELOG](../../CHANGELOG) for planned order.\n\n---\n\n## Attack Types (Confirmed Taxonomy)\n\n> See [Full Taxonomy](../../Taxonomy) for all confirmed subtypes under this category.\n\n---\n\n[← Web Application Overview](../README) · [← Home](../../Home)\n"}, {"id": "CAT-05", "slug": "cat-05", "name": "SSRF", "severity": "CRITICAL", "typeCount": 5, "types": ["Basic SSRF", "Blind SSRF", "SSRF via Protocol Smuggling", "SSRF Filter Bypass", "SSRF to RCE Chains"], "content": "<div align=\"center\">\n\n![CAT-05](https://img.shields.io/badge/CAT-05-SSRF-cc0000?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n![Severity](https://img.shields.io/badge/Severity-CRITICAL-cc0000?style=flat-square&labelColor=1a1a1a)\n![OWASP](https://img.shields.io/badge/OWASP-A01%3A2025-222222?style=flat-square&labelColor=cc0000)\n![Status](https://img.shields.io/badge/Status-Planned-555555?style=flat-square&labelColor=1a1a1a)\n\n# CAT-05: SSRF\n\n> **Domain:** Web Application · **Status:** 🔲 Research Queued\n\n---\n\n## Overview\n\n> ⚠️ **This category page is queued for full research.** The taxonomy and attack type structure are confirmed.\n> Full content — techniques, payloads, tools, and references — will be added in sequence.\n>\n> See the [research roadmap in CHANGELOG](../../CHANGELOG) for planned order.\n\n---\n\n## Attack Types (Confirmed Taxonomy)\n\n> See [Full Taxonomy](../../Taxonomy) for all confirmed subtypes under this category.\n\n---\n\n[← Web Application Overview](../README) · [← Home](../../Home)\n"}, {"id": "CAT-06", "slug": "cat-06", "name": "Security Misconfiguration", "severity": "HIGH", "typeCount": 7, "types": ["Default Credentials", "CORS Misconfiguration", "HTTP Security Headers", "Cloud Storage Misconfiguration", "Debug / Error Exposure", "Directory Listing", "Sensitive File Exposure"], "content": "<div align=\"center\">\n\n![CAT-06](https://img.shields.io/badge/CAT-06-Security%20Misconfiguration-cc5500?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n![Severity](https://img.shields.io/badge/Severity-HIGH-cc5500?style=flat-square&labelColor=1a1a1a)\n![OWASP](https://img.shields.io/badge/OWASP-A02%3A2025-222222?style=flat-square&labelColor=cc0000)\n![Status](https://img.shields.io/badge/Status-Planned-555555?style=flat-square&labelColor=1a1a1a)\n\n# CAT-06: Security Misconfiguration\n\n> **Domain:** Web Application · **Status:** 🔲 Research Queued\n\n---\n\n## Overview\n\n> ⚠️ **This category page is queued for full research.** The taxonomy and attack type structure are confirmed.\n> Full content — techniques, payloads, tools, and references — will be added in sequence.\n>\n> See the [research roadmap in CHANGELOG](../../CHANGELOG) for planned order.\n\n---\n\n## Attack Types (Confirmed Taxonomy)\n\n> See [Full Taxonomy](../../Taxonomy) for all confirmed subtypes under this category.\n\n---\n\n[← Web Application Overview](../README) · [← Home](../../Home)\n"}, {"id": "CAT-07", "slug": "cat-07", "name": "Cryptographic Attacks", "severity": "HIGH", "typeCount": 6, "types": ["Padding Oracle", "Protocol Downgrade", "Hash / MAC Attacks", "Timing Attacks", "Block Cipher Mode Attacks", "JWT Cryptographic"], "content": "<div align=\"center\">\n\n![CAT-07](https://img.shields.io/badge/CAT-07-Cryptographic%20Attacks-cc5500?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n![Severity](https://img.shields.io/badge/Severity-HIGH-cc5500?style=flat-square&labelColor=1a1a1a)\n![OWASP](https://img.shields.io/badge/OWASP-A04%3A2025-222222?style=flat-square&labelColor=cc0000)\n![Status](https://img.shields.io/badge/Status-Planned-555555?style=flat-square&labelColor=1a1a1a)\n\n# CAT-07: Cryptographic Attacks\n\n> **Domain:** Web Application · **Status:** 🔲 Research Queued\n\n---\n\n## Overview\n\n> ⚠️ **This category page is queued for full research.** The taxonomy and attack type structure are confirmed.\n> Full content — techniques, payloads, tools, and references — will be added in sequence.\n>\n> See the [research roadmap in CHANGELOG](../../CHANGELOG) for planned order.\n\n---\n\n## Attack Types (Confirmed Taxonomy)\n\n> See [Full Taxonomy](../../Taxonomy) for all confirmed subtypes under this category.\n\n---\n\n[← Web Application Overview](../README) · [← Home](../../Home)\n"}, {"id": "CAT-08", "slug": "cat-08", "name": "Insecure Deserialization", "severity": "CRITICAL", "typeCount": 7, "types": ["Java Deserialization", "PHP Object Injection", "Python Deserialization", "Ruby Marshal", ".NET Deserialization", "Node.js Deserialization", "YAML / XML Deserialization"], "content": "<div align=\"center\">\n\n![CAT-08](https://img.shields.io/badge/CAT-08-Insecure%20Deserialization-cc0000?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n![Severity](https://img.shields.io/badge/Severity-CRITICAL-cc0000?style=flat-square&labelColor=1a1a1a)\n![OWASP](https://img.shields.io/badge/OWASP-A08%3A2025-222222?style=flat-square&labelColor=cc0000)\n![Status](https://img.shields.io/badge/Status-Planned-555555?style=flat-square&labelColor=1a1a1a)\n\n# CAT-08: Insecure Deserialization\n\n> **Domain:** Web Application · **Status:** 🔲 Research Queued\n\n---\n\n## Overview\n\n> ⚠️ **This category page is queued for full research.** The taxonomy and attack type structure are confirmed.\n> Full content — techniques, payloads, tools, and references — will be added in sequence.\n>\n> See the [research roadmap in CHANGELOG](../../CHANGELOG) for planned order.\n\n---\n\n## Attack Types (Confirmed Taxonomy)\n\n> See [Full Taxonomy](../../Taxonomy) for all confirmed subtypes under this category.\n\n---\n\n[← Web Application Overview](../README) · [← Home](../../Home)\n"}, {"id": "CAT-09", "slug": "cat-09", "name": "File & Resource Manipulation", "severity": "HIGH", "typeCount": 5, "types": ["File Upload Attacks", "Local File Inclusion (LFI)", "Remote File Inclusion (RFI)", "XML External Entity (XXE)", "Archive / Path Traversal"], "content": "<div align=\"center\">\n\n![CAT-09](https://img.shields.io/badge/CAT-09-File%20Resource%20Manipulation-cc5500?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n![Severity](https://img.shields.io/badge/Severity-HIGH-cc5500?style=flat-square&labelColor=1a1a1a)\n![OWASP](https://img.shields.io/badge/OWASP-A05%3A2025-222222?style=flat-square&labelColor=cc0000)\n![Status](https://img.shields.io/badge/Status-Planned-555555?style=flat-square&labelColor=1a1a1a)\n\n# CAT-09: File Resource Manipulation\n\n> **Domain:** Web Application · **Status:** 🔲 Research Queued\n\n---\n\n## Overview\n\n> ⚠️ **This category page is queued for full research.** The taxonomy and attack type structure are confirmed.\n> Full content — techniques, payloads, tools, and references — will be added in sequence.\n>\n> See the [research roadmap in CHANGELOG](../../CHANGELOG) for planned order.\n\n---\n\n## Attack Types (Confirmed Taxonomy)\n\n> See [Full Taxonomy](../../Taxonomy) for all confirmed subtypes under this category.\n\n---\n\n[← Web Application Overview](../README) · [← Home](../../Home)\n"}, {"id": "CAT-10", "slug": "cat-10", "name": "Business Logic", "severity": "HIGH", "typeCount": 5, "types": ["Price / Value Manipulation", "Workflow Bypass", "Race Condition Logic", "Feature / API Misuse", "Account Takeover via Logic"], "content": "<div align=\"center\">\n\n![CAT-10](https://img.shields.io/badge/CAT-10-Business%20Logic-cc5500?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n![Severity](https://img.shields.io/badge/Severity-HIGH-cc5500?style=flat-square&labelColor=1a1a1a)\n![OWASP](https://img.shields.io/badge/OWASP-A06%3A2025-222222?style=flat-square&labelColor=cc0000)\n![Status](https://img.shields.io/badge/Status-Planned-555555?style=flat-square&labelColor=1a1a1a)\n\n# CAT-10: Business Logic\n\n> **Domain:** Web Application · **Status:** 🔲 Research Queued\n\n---\n\n## Overview\n\n> ⚠️ **This category page is queued for full research.** The taxonomy and attack type structure are confirmed.\n> Full content — techniques, payloads, tools, and references — will be added in sequence.\n>\n> See the [research roadmap in CHANGELOG](../../CHANGELOG) for planned order.\n\n---\n\n## Attack Types (Confirmed Taxonomy)\n\n> See [Full Taxonomy](../../Taxonomy) for all confirmed subtypes under this category.\n\n---\n\n[← Web Application Overview](../README) · [← Home](../../Home)\n"}, {"id": "CAT-11", "slug": "cat-11", "name": "HTTP Protocol Attacks", "severity": "HIGH", "typeCount": 6, "types": ["HTTP Request Smuggling", "Web Cache Poisoning", "Web Cache Deception", "HTTP Parameter Pollution", "Host Header Injection", "HTTP Method Abuse"], "content": "<div align=\"center\">\n\n![CAT-11](https://img.shields.io/badge/CAT-11-HTTP%20Protocol%20Attacks-cc5500?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n![Severity](https://img.shields.io/badge/Severity-HIGH-cc5500?style=flat-square&labelColor=1a1a1a)\n![OWASP](https://img.shields.io/badge/OWASP-N%2FA-222222?style=flat-square&labelColor=cc0000)\n![Status](https://img.shields.io/badge/Status-Planned-555555?style=flat-square&labelColor=1a1a1a)\n\n# CAT-11: HTTP Protocol Attacks\n\n> **Domain:** Web Application · **Status:** 🔲 Research Queued\n\n---\n\n## Overview\n\n> ⚠️ **This category page is queued for full research.** The taxonomy and attack type structure are confirmed.\n> Full content — techniques, payloads, tools, and references — will be added in sequence.\n>\n> See the [research roadmap in CHANGELOG](../../CHANGELOG) for planned order.\n\n---\n\n## Attack Types (Confirmed Taxonomy)\n\n> See [Full Taxonomy](../../Taxonomy) for all confirmed subtypes under this category.\n\n---\n\n[← Web Application Overview](../README) · [← Home](../../Home)\n"}, {"id": "CAT-12", "slug": "cat-12", "name": "API Security", "severity": "CRITICAL", "typeCount": 7, "types": ["BOLA (Broken Object Level Auth)", "Broken Function Level Auth", "Excessive Data Exposure", "Mass Assignment via API", "Rate Limit Bypass", "Credential Leakage", "GraphQL Attacks"], "content": "<div align=\"center\">\n\n![CAT-12](https://img.shields.io/badge/CAT-12-API%20Security-cc0000?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n![Severity](https://img.shields.io/badge/Severity-CRITICAL-cc0000?style=flat-square&labelColor=1a1a1a)\n![OWASP](https://img.shields.io/badge/OWASP-A01%3A2025-222222?style=flat-square&labelColor=cc0000)\n![Status](https://img.shields.io/badge/Status-Planned-555555?style=flat-square&labelColor=1a1a1a)\n\n# CAT-12: API Security\n\n> **Domain:** Web Application · **Status:** 🔲 Research Queued\n\n---\n\n## Overview\n\n> ⚠️ **This category page is queued for full research.** The taxonomy and attack type structure are confirmed.\n> Full content — techniques, payloads, tools, and references — will be added in sequence.\n>\n> See the [research roadmap in CHANGELOG](../../CHANGELOG) for planned order.\n\n---\n\n## Attack Types (Confirmed Taxonomy)\n\n> See [Full Taxonomy](../../Taxonomy) for all confirmed subtypes under this category.\n\n---\n\n[← Web Application Overview](../README) · [← Home](../../Home)\n"}, {"id": "CAT-13", "slug": "cat-13", "name": "OAuth & Identity Protocol", "severity": "CRITICAL", "typeCount": 4, "types": ["OAuth 2.0 Attacks", "OIDC Attacks", "SAML Attacks", "Account Takeover via Identity Flows"], "content": "<div align=\"center\">\n\n![CAT-13](https://img.shields.io/badge/CAT-13-OAuth%20Identity-cc0000?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n![Severity](https://img.shields.io/badge/Severity-CRITICAL-cc0000?style=flat-square&labelColor=1a1a1a)\n![OWASP](https://img.shields.io/badge/OWASP-A07%3A2025-222222?style=flat-square&labelColor=cc0000)\n![Status](https://img.shields.io/badge/Status-Planned-555555?style=flat-square&labelColor=1a1a1a)\n\n# CAT-13: OAuth Identity\n\n> **Domain:** Web Application · **Status:** 🔲 Research Queued\n\n---\n\n## Overview\n\n> ⚠️ **This category page is queued for full research.** The taxonomy and attack type structure are confirmed.\n> Full content — techniques, payloads, tools, and references — will be added in sequence.\n>\n> See the [research roadmap in CHANGELOG](../../CHANGELOG) for planned order.\n\n---\n\n## Attack Types (Confirmed Taxonomy)\n\n> See [Full Taxonomy](../../Taxonomy) for all confirmed subtypes under this category.\n\n---\n\n[← Web Application Overview](../README) · [← Home](../../Home)\n"}, {"id": "CAT-14", "slug": "cat-14", "name": "WebSocket Attacks", "severity": "MEDIUM", "typeCount": 4, "types": ["Cross-Site WebSocket Hijacking", "WebSocket Message Injection", "WebSocket Auth / Session Attacks", "WebSocket DoS"], "content": "<div align=\"center\">\n\n![CAT-14](https://img.shields.io/badge/CAT-14-WebSocket%20Attacks-cc8800?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n![Severity](https://img.shields.io/badge/Severity-MEDIUM-cc8800?style=flat-square&labelColor=1a1a1a)\n![OWASP](https://img.shields.io/badge/OWASP-N%2FA-222222?style=flat-square&labelColor=cc0000)\n![Status](https://img.shields.io/badge/Status-Planned-555555?style=flat-square&labelColor=1a1a1a)\n\n# CAT-14: WebSocket Attacks\n\n> **Domain:** Web Application · **Status:** 🔲 Research Queued\n\n---\n\n## Overview\n\n> ⚠️ **This category page is queued for full research.** The taxonomy and attack type structure are confirmed.\n> Full content — techniques, payloads, tools, and references — will be added in sequence.\n>\n> See the [research roadmap in CHANGELOG](../../CHANGELOG) for planned order.\n\n---\n\n## Attack Types (Confirmed Taxonomy)\n\n> See [Full Taxonomy](../../Taxonomy) for all confirmed subtypes under this category.\n\n---\n\n[← Web Application Overview](../README) · [← Home](../../Home)\n"}, {"id": "CAT-15", "slug": "cat-15", "name": "Prototype Pollution", "severity": "HIGH", "typeCount": 4, "types": ["Client-Side Prototype Pollution", "Server-Side Prototype Pollution", "Prototype Pollution Gadget Chains", "Class Pollution"], "content": "<div align=\"center\">\n\n![CAT-15](https://img.shields.io/badge/CAT-15-Prototype%20Pollution-cc5500?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n![Severity](https://img.shields.io/badge/Severity-HIGH-cc5500?style=flat-square&labelColor=1a1a1a)\n![OWASP](https://img.shields.io/badge/OWASP-A05%3A2025-222222?style=flat-square&labelColor=cc0000)\n![Status](https://img.shields.io/badge/Status-Planned-555555?style=flat-square&labelColor=1a1a1a)\n\n# CAT-15: Prototype Pollution\n\n> **Domain:** Web Application · **Status:** 🔲 Research Queued\n\n---\n\n## Overview\n\n> ⚠️ **This category page is queued for full research.** The taxonomy and attack type structure are confirmed.\n> Full content — techniques, payloads, tools, and references — will be added in sequence.\n>\n> See the [research roadmap in CHANGELOG](../../CHANGELOG) for planned order.\n\n---\n\n## Attack Types (Confirmed Taxonomy)\n\n> See [Full Taxonomy](../../Taxonomy) for all confirmed subtypes under this category.\n\n---\n\n[← Web Application Overview](../README) · [← Home](../../Home)\n"}, {"id": "CAT-16", "slug": "cat-16", "name": "Race Conditions", "severity": "HIGH", "typeCount": 4, "types": ["TOCTOU (Time-of-Check Time-of-Use)", "Limit Override", "Double Spend", "Parallel Request Techniques"], "content": "<div align=\"center\">\n\n![CAT-16](https://img.shields.io/badge/CAT-16-Race%20Conditions-cc5500?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n![Severity](https://img.shields.io/badge/Severity-HIGH-cc5500?style=flat-square&labelColor=1a1a1a)\n![OWASP](https://img.shields.io/badge/OWASP-A10%3A2025-222222?style=flat-square&labelColor=cc0000)\n![Status](https://img.shields.io/badge/Status-Planned-555555?style=flat-square&labelColor=1a1a1a)\n\n# CAT-16: Race Conditions\n\n> **Domain:** Web Application · **Status:** 🔲 Research Queued\n\n---\n\n## Overview\n\n> ⚠️ **This category page is queued for full research.** The taxonomy and attack type structure are confirmed.\n> Full content — techniques, payloads, tools, and references — will be added in sequence.\n>\n> See the [research roadmap in CHANGELOG](../../CHANGELOG) for planned order.\n\n---\n\n## Attack Types (Confirmed Taxonomy)\n\n> See [Full Taxonomy](../../Taxonomy) for all confirmed subtypes under this category.\n\n---\n\n[← Web Application Overview](../README) · [← Home](../../Home)\n"}, {"id": "CAT-17", "slug": "cat-17", "name": "Information Disclosure", "severity": "MEDIUM", "typeCount": 5, "types": ["Error-Based Disclosure", "Timing Side Channels", "XS-Leaks", "Source / Config Exposure", "API Spec Exposure"], "content": "<div align=\"center\">\n\n![CAT-17](https://img.shields.io/badge/CAT-17-Information%20Disclosure-cc8800?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n![Severity](https://img.shields.io/badge/Severity-MEDIUM-cc8800?style=flat-square&labelColor=1a1a1a)\n![OWASP](https://img.shields.io/badge/OWASP-N%2FA-222222?style=flat-square&labelColor=cc0000)\n![Status](https://img.shields.io/badge/Status-Planned-555555?style=flat-square&labelColor=1a1a1a)\n\n# CAT-17: Information Disclosure\n\n> **Domain:** Web Application · **Status:** 🔲 Research Queued\n\n---\n\n## Overview\n\n> ⚠️ **This category page is queued for full research.** The taxonomy and attack type structure are confirmed.\n> Full content — techniques, payloads, tools, and references — will be added in sequence.\n>\n> See the [research roadmap in CHANGELOG](../../CHANGELOG) for planned order.\n\n---\n\n## Attack Types (Confirmed Taxonomy)\n\n> See [Full Taxonomy](../../Taxonomy) for all confirmed subtypes under this category.\n\n---\n\n[← Web Application Overview](../README) · [← Home](../../Home)\n"}, {"id": "CAT-18", "slug": "cat-18", "name": "Clickjacking & UI Redress", "severity": "MEDIUM", "typeCount": 3, "types": ["Classic Clickjacking", "Advanced Clickjacking (SVG / Extension)", "UI Redress Variants"], "content": "<div align=\"center\">\n\n![CAT-18](https://img.shields.io/badge/CAT-18-Clickjacking%20UI%20Redress-cc8800?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n![Severity](https://img.shields.io/badge/Severity-MEDIUM-cc8800?style=flat-square&labelColor=1a1a1a)\n![OWASP](https://img.shields.io/badge/OWASP-N%2FA-222222?style=flat-square&labelColor=cc0000)\n![Status](https://img.shields.io/badge/Status-Planned-555555?style=flat-square&labelColor=1a1a1a)\n\n# CAT-18: Clickjacking UI Redress\n\n> **Domain:** Web Application · **Status:** 🔲 Research Queued\n\n---\n\n## Overview\n\n> ⚠️ **This category page is queued for full research.** The taxonomy and attack type structure are confirmed.\n> Full content — techniques, payloads, tools, and references — will be added in sequence.\n>\n> See the [research roadmap in CHANGELOG](../../CHANGELOG) for planned order.\n\n---\n\n## Attack Types (Confirmed Taxonomy)\n\n> See [Full Taxonomy](../../Taxonomy) for all confirmed subtypes under this category.\n\n---\n\n[← Web Application Overview](../README) · [← Home](../../Home)\n"}, {"id": "CAT-19", "slug": "cat-19", "name": "Supply Chain Attacks", "severity": "HIGH", "typeCount": 3, "types": ["Dependency Attacks", "Build System Compromise", "CDN / Third-Party Script Attacks"], "content": "<div align=\"center\">\n\n![CAT-19](https://img.shields.io/badge/CAT-19-Supply%20Chain-cc5500?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n![Severity](https://img.shields.io/badge/Severity-HIGH-cc5500?style=flat-square&labelColor=1a1a1a)\n![OWASP](https://img.shields.io/badge/OWASP-A03%3A2025-222222?style=flat-square&labelColor=cc0000)\n![Status](https://img.shields.io/badge/Status-Planned-555555?style=flat-square&labelColor=1a1a1a)\n\n# CAT-19: Supply Chain\n\n> **Domain:** Web Application · **Status:** 🔲 Research Queued\n\n---\n\n## Overview\n\n> ⚠️ **This category page is queued for full research.** The taxonomy and attack type structure are confirmed.\n> Full content — techniques, payloads, tools, and references — will be added in sequence.\n>\n> See the [research roadmap in CHANGELOG](../../CHANGELOG) for planned order.\n\n---\n\n## Attack Types (Confirmed Taxonomy)\n\n> See [Full Taxonomy](../../Taxonomy) for all confirmed subtypes under this category.\n\n---\n\n[← Web Application Overview](../README) · [← Home](../../Home)\n"}, {"id": "CAT-20", "slug": "cat-20", "name": "Application DoS", "severity": "MEDIUM", "typeCount": 5, "types": ["ReDoS", "XML / JSON / Archive Bombs", "Application Logic DoS", "Slow HTTP Attacks", "CPDoS (Cache Poisoning DoS)"], "content": "<div align=\"center\">\n\n![CAT-20](https://img.shields.io/badge/CAT-20-Application%20DoS-cc8800?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n![Severity](https://img.shields.io/badge/Severity-MEDIUM-cc8800?style=flat-square&labelColor=1a1a1a)\n![OWASP](https://img.shields.io/badge/OWASP-N%2FA-222222?style=flat-square&labelColor=cc0000)\n![Status](https://img.shields.io/badge/Status-Planned-555555?style=flat-square&labelColor=1a1a1a)\n\n# CAT-20: Application DoS\n\n> **Domain:** Web Application · **Status:** 🔲 Research Queued\n\n---\n\n## Overview\n\n> ⚠️ **This category page is queued for full research.** The taxonomy and attack type structure are confirmed.\n> Full content — techniques, payloads, tools, and references — will be added in sequence.\n>\n> See the [research roadmap in CHANGELOG](../../CHANGELOG) for planned order.\n\n---\n\n## Attack Types (Confirmed Taxonomy)\n\n> See [Full Taxonomy](../../Taxonomy) for all confirmed subtypes under this category.\n\n---\n\n[← Web Application Overview](../README) · [← Home](../../Home)\n"}, {"id": "CAT-21", "slug": "cat-21", "name": "CSRF", "severity": "MEDIUM", "typeCount": 4, "types": ["Classic CSRF", "Login CSRF", "CSRF Token Bypass", "Same-Site Gadget Chains"], "content": "<div align=\"center\">\n\n![CAT-21](https://img.shields.io/badge/CAT-21-CSRF-cc8800?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n![Severity](https://img.shields.io/badge/Severity-MEDIUM-cc8800?style=flat-square&labelColor=1a1a1a)\n![OWASP](https://img.shields.io/badge/OWASP-N%2FA-222222?style=flat-square&labelColor=cc0000)\n![Status](https://img.shields.io/badge/Status-Planned-555555?style=flat-square&labelColor=1a1a1a)\n\n# CAT-21: CSRF\n\n> **Domain:** Web Application · **Status:** 🔲 Research Queued\n\n---\n\n## Overview\n\n> ⚠️ **This category page is queued for full research.** The taxonomy and attack type structure are confirmed.\n> Full content — techniques, payloads, tools, and references — will be added in sequence.\n>\n> See the [research roadmap in CHANGELOG](../../CHANGELOG) for planned order.\n\n---\n\n## Attack Types (Confirmed Taxonomy)\n\n> See [Full Taxonomy](../../Taxonomy) for all confirmed subtypes under this category.\n\n---\n\n[← Web Application Overview](../README) · [← Home](../../Home)\n"}, {"id": "CAT-22", "slug": "cat-22", "name": "Emerging Attacks", "severity": "HIGH", "typeCount": 5, "types": ["HTTP/2 & HTTP/3 Attacks", "Subdomain Takeover", "DNS Rebinding", "SMTP Smuggling", "Browser / Platform Side Channels"], "content": "<div align=\"center\">\n\n![CAT-22](https://img.shields.io/badge/CAT-22-Emerging%20Attacks-cc5500?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n![Severity](https://img.shields.io/badge/Severity-HIGH-cc5500?style=flat-square&labelColor=1a1a1a)\n![OWASP](https://img.shields.io/badge/OWASP-N%2FA-222222?style=flat-square&labelColor=cc0000)\n![Status](https://img.shields.io/badge/Status-Planned-555555?style=flat-square&labelColor=1a1a1a)\n\n# CAT-22: Emerging Attacks\n\n> **Domain:** Web Application · **Status:** 🔲 Research Queued\n\n---\n\n## Overview\n\n> ⚠️ **This category page is queued for full research.** The taxonomy and attack type structure are confirmed.\n> Full content — techniques, payloads, tools, and references — will be added in sequence.\n>\n> See the [research roadmap in CHANGELOG](../../CHANGELOG) for planned order.\n\n---\n\n## Attack Types (Confirmed Taxonomy)\n\n> See [Full Taxonomy](../../Taxonomy) for all confirmed subtypes under this category.\n\n---\n\n[← Web Application Overview](../README) · [← Home](../../Home)\n"}], "pages": {"home": "<div align=\"center\">\n\n<img src=\"https://img.shields.io/badge/GORGE-Vulnerability%20Database-cc0000?style=for-the-badge&labelColor=0d0d0d&color=cc0000\" />\n\n```\n ██████╗  ██████╗ ██████╗  ██████╗ ███████╗\n██╔════╝ ██╔═══██╗██╔══██╗██╔════╝ ██╔════╝\n██║  ███╗██║   ██║██████╔╝██║  ███╗█████╗  \n██║   ██║██║   ██║██╔══██╗██║   ██║██╔══╝  \n╚██████╔╝╚██████╔╝██║  ██║╚██████╔╝███████╗\n ╚═════╝  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝\n```\n\n**Application Security Vulnerability Database**\n\n![Categories](https://img.shields.io/badge/Categories-22-1a1a1a?style=flat-square&labelColor=cc0000)\n![Attack Types](https://img.shields.io/badge/Attack%20Types-133-1a1a1a?style=flat-square&labelColor=333333)\n![Subtypes](https://img.shields.io/badge/Subtypes-665%2B-1a1a1a?style=flat-square&labelColor=555555)\n![Coverage](https://img.shields.io/badge/Coverage-Web%20%7C%20Mobile-1a1a1a?style=flat-square&labelColor=222222)\n![Status](https://img.shields.io/badge/Status-Active%20Research-cc0000?style=flat-square&labelColor=1a1a1a)\n\n*Structured for AI Agents · Security Researchers · Learners*\n\n</div>\n\n---\n\n## What is GORGE?\n\n**GORGE** is a comprehensive, research-grade application security vulnerability database. Every entry is built from primary sources — CVEs, academic papers, real-world bug bounty writeups, and original research — not aggregated summaries.\n\nThis is not a marketing resource. There is no fluff. Every page answers: **what it is, how it works, how to find it, how to exploit it, and how to fix it** — at every skill level from foundational to elite.\n\n**Designed for three audiences, simultaneously:**\n- 🤖 **AI Agents** — machine-readable metadata, structured JSON blocks, consistent taxonomy IDs\n- 🔴 **Security Researchers** — full payloads, exploitation chains, real CVE references, tool commands\n- 📚 **Learners** — progressive depth, explained context, lab environments, visual attack flows\n\n---\n\n## Scope\n\n| Domain | Status | Categories | Types | Subtypes |\n|--------|--------|-----------|-------|---------|\n| **Web Application** | 🔴 Active | 22 | 133 | 665+ |\n| **Mobile Application** | 🟡 Planned | — | — | — |\n| **API Security** | 🟠 Partial (under Web) | Included | Included | Included |\n\n---\n\n## Quick Navigation\n\n### 🔴 Web Application Security\n\n| ID | Category | Severity | Types |\n|----|----------|----------|-------|\n| [CAT-01](Web-Application/CAT-01-Injection-Attacks/README) | Injection Attacks | ![CRITICAL](https://img.shields.io/badge/-CRITICAL-cc0000?style=flat-square) | 15 |\n| [CAT-02](Web-Application/CAT-02-Broken-Access-Control/README) | Broken Access Control | ![CRITICAL](https://img.shields.io/badge/-CRITICAL-cc0000?style=flat-square) | 8 |\n| [CAT-03](Web-Application/CAT-03-XSS-Client-Side/README) | XSS & Client-Side Attacks | ![HIGH](https://img.shields.io/badge/-HIGH-cc5500?style=flat-square) | 10 |\n| [CAT-04](Web-Application/CAT-04-Authentication-Session/README) | Authentication & Session Attacks | ![CRITICAL](https://img.shields.io/badge/-CRITICAL-cc0000?style=flat-square) | 7 |\n| [CAT-05](Web-Application/CAT-05-SSRF/README) | Server-Side Request Forgery | ![CRITICAL](https://img.shields.io/badge/-CRITICAL-cc0000?style=flat-square) | 5 |\n| [CAT-06](Web-Application/CAT-06-Security-Misconfiguration/README) | Security Misconfiguration | ![HIGH](https://img.shields.io/badge/-HIGH-cc5500?style=flat-square) | 7 |\n| [CAT-07](Web-Application/CAT-07-Cryptographic-Attacks/README) | Cryptographic Attacks | ![HIGH](https://img.shields.io/badge/-HIGH-cc5500?style=flat-square) | 6 |\n| [CAT-08](Web-Application/CAT-08-Insecure-Deserialization/README) | Insecure Deserialization | ![CRITICAL](https://img.shields.io/badge/-CRITICAL-cc0000?style=flat-square) | 7 |\n| [CAT-09](Web-Application/CAT-09-File-Resource-Manipulation/README) | File & Resource Manipulation | ![HIGH](https://img.shields.io/badge/-HIGH-cc5500?style=flat-square) | 5 |\n| [CAT-10](Web-Application/CAT-10-Business-Logic/README) | Business Logic Attacks | ![HIGH](https://img.shields.io/badge/-HIGH-cc5500?style=flat-square) | 5 |\n| [CAT-11](Web-Application/CAT-11-HTTP-Protocol-Attacks/README) | HTTP Protocol Attacks | ![HIGH](https://img.shields.io/badge/-HIGH-cc5500?style=flat-square) | 6 |\n| [CAT-12](Web-Application/CAT-12-API-Security/README) | API Security Attacks | ![CRITICAL](https://img.shields.io/badge/-CRITICAL-cc0000?style=flat-square) | 7 |\n| [CAT-13](Web-Application/CAT-13-OAuth-Identity/README) | OAuth & Identity Protocol Attacks | ![CRITICAL](https://img.shields.io/badge/-CRITICAL-cc0000?style=flat-square) | 4 |\n| [CAT-14](Web-Application/CAT-14-WebSocket-Attacks/README) | WebSocket Attacks | ![MEDIUM](https://img.shields.io/badge/-MEDIUM-cc8800?style=flat-square) | 4 |\n| [CAT-15](Web-Application/CAT-15-Prototype-Pollution/README) | Prototype Pollution | ![HIGH](https://img.shields.io/badge/-HIGH-cc5500?style=flat-square) | 4 |\n| [CAT-16](Web-Application/CAT-16-Race-Conditions/README) | Race Conditions & Concurrency | ![HIGH](https://img.shields.io/badge/-HIGH-cc5500?style=flat-square) | 4 |\n| [CAT-17](Web-Application/CAT-17-Information-Disclosure/README) | Information Disclosure & Side Channels | ![MEDIUM](https://img.shields.io/badge/-MEDIUM-cc8800?style=flat-square) | 5 |\n| [CAT-18](Web-Application/CAT-18-Clickjacking-UI-Redress/README) | Clickjacking & UI Redress | ![MEDIUM](https://img.shields.io/badge/-MEDIUM-cc8800?style=flat-square) | 3 |\n| [CAT-19](Web-Application/CAT-19-Supply-Chain/README) | Supply Chain Attacks | ![HIGH](https://img.shields.io/badge/-HIGH-cc5500?style=flat-square) | 3 |\n| [CAT-20](Web-Application/CAT-20-Application-DoS/README) | Denial of Service (App Layer) | ![MEDIUM](https://img.shields.io/badge/-MEDIUM-cc8800?style=flat-square) | 5 |\n| [CAT-21](Web-Application/CAT-21-CSRF/README) | Cross-Site Request Forgery | ![MEDIUM](https://img.shields.io/badge/-MEDIUM-cc8800?style=flat-square) | 4 |\n| [CAT-22](Web-Application/CAT-22-Emerging-Attacks/README) | Emerging & Protocol-Level Attacks | ![HIGH](https://img.shields.io/badge/-HIGH-cc5500?style=flat-square) | 5 |\n\n---\n\n## Resources\n\n| Resource | Description |\n|----------|-------------|\n| [Tools Index](Resources/Tools-Index) | All offensive security tools by category with install + usage |\n| [Lab Environments](Resources/Lab-Environments) | Practice labs — DVWA, HackTheBox, PortSwigger, VulnHub |\n| [References Master](Resources/References-Master) | All blogs, writeups, papers, YouTube — curated, no marketing |\n| [Methodology Framework](Resources/Methodology-Framework) | Recon → Identification → Exploitation → Reporting |\n| [Taxonomy](Taxonomy) | Full machine-readable taxonomy with IDs, CWEs, CAPEC mappings |\n\n---\n\n## Standards & Cross-References\n\nThis database cross-references:\n\n| Standard | Coverage |\n|----------|---------|\n| **OWASP Top 10:2025** | Full mapping |\n| **OWASP WSTG 4.2** | Test case IDs |\n| **CAPEC** | Attack pattern IDs |\n| **CWE** | Weakness IDs per subtype |\n| **CVSS v3.1** | Base scores where applicable |\n| **MITRE ATT&CK** | TTP mappings (where applicable) |\n\n---\n\n## For AI Agents\n\nEvery subtype page contains a machine-readable JSON metadata block:\n\n```json\n{\n  \"id\": \"WEB-CAT01-SQLi-BlindBoolean\",\n  \"category\": \"Injection Attacks\",\n  \"type\": \"SQL Injection\",\n  \"subtype\": \"Boolean-Based Blind SQLi\",\n  \"cwe\": [\"CWE-89\"],\n  \"capec\": [\"CAPEC-7\"],\n  \"cvss_base\": 9.8,\n  \"severity\": \"CRITICAL\",\n  \"owasp_top10_2025\": \"A05\",\n  \"skill_level\": \"intermediate\",\n  \"tags\": [\"sqli\", \"blind\", \"boolean\", \"database\", \"injection\"]\n}\n```\n\nThe [Taxonomy](Taxonomy) page provides the complete enumeration in JSON format for programmatic consumption.\n\n---\n\n## Contributing & Quality Standard\n\nAll content must:\n- Be sourced from primary technical references (no marketing blogs)\n- Include working payloads tested against known-vulnerable environments\n- Reference real CVEs or bug bounty reports where applicable\n- Follow the [subtype page template](Templates/TEMPLATE-Subtype)\n\n---\n\n<div align=\"center\">\n\n![Last Updated](https://img.shields.io/badge/Last%20Updated-2025-333333?style=flat-square&labelColor=1a1a1a)\n![License](https://img.shields.io/badge/License-MIT-555555?style=flat-square&labelColor=1a1a1a)\n![Research](https://img.shields.io/badge/For-Research%20%26%20Education-cc0000?style=flat-square&labelColor=1a1a1a)\n\n</div>\n", "about": "<div align=\"center\">\n\n![About](https://img.shields.io/badge/GORGE-About%20This%20Project-cc0000?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n---\n\n## What This Is\n\nGORGE is a structured, research-grade vulnerability database focused exclusively on **application security**. It is built for depth, not breadth of surface coverage. Every topic receives focused research before a single page is written.\n\n**Core principles:**\n- One topic at a time. Quality and depth over speed.\n- Primary sources only — CVEs, academic papers, bug bounty writeups, original PoCs.\n- No marketing content. No \"Top 10 tips\" padding. No AI-generated filler.\n- Every payload is real. Every tool command is tested or sourced from confirmed writeups.\n- All content is verifiable — every claim has a reference.\n\n---\n\n## Scope\n\n### Phase 1 — Web Application Security\n22 attack categories covering the full modern web attack surface. Based on cross-referencing:\n- OWASP Top 10:2025\n- OWASP Web Security Testing Guide (WSTG) 4.2\n- CAPEC Mechanisms of Attack taxonomy\n- MITRE CWE database\n- PortSwigger Web Security Research (2019–2025)\n- Real-world bug bounty reports (HackerOne, Bugcrowd disclosures)\n\n### Phase 2 — Mobile Application Security *(Planned)*\nCovering iOS and Android attack surfaces:\n- OWASP Mobile Top 10\n- MASTG (Mobile Application Security Testing Guide)\n- Runtime manipulation, certificate pinning bypass, IPC attacks\n\n---\n\n## How Pages Are Structured\n\nEvery attack subtype page follows an identical schema:\n\n```\nOverview → Attack Surface → How It Works → Detection & Validation\n→ Techniques (Beginner → Advanced) → Tools → Payload Crafting\n→ Exploitation → Variations → Real-World Examples\n→ Defenses → References → AI Metadata Block\n```\n\nThis consistency is intentional — it makes every page usable as a structured data source for AI agents and as a learning progression for humans.\n\n---\n\n## Skill Level Framework\n\nContent within each page is depth-stratified:\n\n| Level | Description | Who it's for |\n|-------|-------------|-------------|\n| **Foundational** | Core concept, basic detection, standard tool usage | New to the topic |\n| **Intermediate** | WAF bypass, manual exploitation, chaining | Practicing researcher |\n| **Advanced** | Novel techniques, edge cases, protocol-level | Senior researcher |\n| **Elite** | Cutting-edge (2023–2025 research), 0-day patterns | CTF / Red team |\n\n---\n\n## For AI Agents\n\nEvery subtype page ends with a structured JSON metadata block inside a `<details>` tag:\n\n```json\n{\n  \"id\": \"WEB-CAT01-SQLi-BlindBoolean\",\n  \"schema_version\": \"1.0\",\n  \"category_id\": \"CAT-01\",\n  \"category\": \"Injection Attacks\",\n  \"type\": \"SQL Injection\",\n  \"subtype\": \"Boolean-Based Blind SQLi\",\n  \"cwe\": [\"CWE-89\"],\n  \"capec\": [\"CAPEC-7\"],\n  \"owasp_top10_2025\": \"A05\",\n  \"wstg_id\": \"WSTG-INPV-05\",\n  \"cvss_base\": 9.8,\n  \"severity\": \"CRITICAL\",\n  \"requires_auth\": false,\n  \"skill_level\": \"intermediate\",\n  \"attack_surface\": [\"web\", \"api\"],\n  \"impact\": [\"confidentiality\", \"integrity\", \"availability\"],\n  \"detection_difficulty\": \"medium\",\n  \"exploitation_difficulty\": \"medium\",\n  \"tags\": [\"sqli\", \"blind\", \"boolean\", \"database\", \"injection\"]\n}\n```\n\nThe full taxonomy with all IDs is available in machine-readable format at [Taxonomy](Taxonomy).\n\n---\n\n## Source Quality Standards\n\nReferences are classified and must meet:\n\n| Type | Standard |\n|------|----------|\n| **Technical Blogs** | Must be from a named researcher, include PoC or technical mechanism |\n| **Writeups** | Must be from an official disclosure or named researcher |\n| **Research Papers** | Peer-reviewed or from a recognized conference (DEF CON, Black Hat, USENIX, CCS, IEEE S&P) |\n| **YouTube** | Must be from a technical channel — not a beginner tutorial overview |\n| **CVEs** | Must link to NVD entry + at least one technical analysis |\n\nMarketing blogs, vendor \"what is X\" summaries, and uncited claims are never used.\n\n---\n\n## Payload Policy\n\nFull, working payloads are included for all attack subtypes. This database is intended for:\n- Security researchers conducting authorized penetration tests\n- CTF players\n- Developers building secure applications\n- AI agents assisting in security research\n\nUse responsibly. Unauthorized testing is illegal.\n\n---\n\n## Version & Update Policy\n\nSee [CHANGELOG](CHANGELOG) for the full update history.\n\nNew attack subtypes are researched and written one at a time. Existing pages are updated when:\n- A new technique variant is published (CVE, PortSwigger research, conference talk)\n- A new tool with significant capability is released\n- An existing payload or technique is demonstrated to be outdated\n", "taxonomy": "<div align=\"center\">\n\n![Taxonomy](https://img.shields.io/badge/GORGE-Attack%20Taxonomy-333333?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n# GORGE Attack Taxonomy\n\n> Machine-readable + human-readable attack taxonomy for Web Application Security.\n> Schema version: 1.0 | Last updated: 2025\n\n---\n\n## Taxonomy Principles\n\nThis taxonomy is built from cross-referencing:\n- **OWASP Top 10:2025** — risk categories\n- **CAPEC** — Mechanisms of Attack hierarchy (View → Category → Meta → Standard → Detailed)\n- **CWE** — Weakness classification per attack\n- **OWASP WSTG 4.2** — test case IDs\n- **Real-world attack intelligence** (PortSwigger Research 2019–2025, bug bounty disclosures)\n\nHierarchy: `Domain → Category → Type → Subtype`\n\n---\n\n## Full Taxonomy: Web Application\n\n<details>\n<summary><b>Expand Full Human-Readable Taxonomy</b></summary>\n\n### CAT-01 · Injection Attacks · CRITICAL\n- **SQLi** — Classic, Union, Error, Boolean Blind, Time Blind, OOB, Second-Order, Stacked, JSON/XML context, ORM\n- **NoSQLi** — MongoDB operator injection, JS injection, Blind NoSQLi, Firebase\n- **OS Command Injection** — Classic, Blind, Time-based blind, OOB, Argument injection\n- **SSTI** — Jinja2, Twig, Freemarker, Velocity, Smarty, Pebble, ERB, Handlebars, Mako\n- **LDAP Injection** — Filter, Attribute, DN, Blind\n- **XPath Injection** — Classic, Blind, OOB\n- **EL / OGNL Injection** — Spring EL, OGNL (Struts), JSP EL, JSF EL, Groovy\n- **XML Injection** — Tag, CDATA, XSL, Schema injection\n- **HTML Injection** — Stored, Reflected, DOM-based\n- **CRLF / HTTP Header Injection** — Response splitting, Log injection, Cookie injection, Redirect\n- **SMTP Injection** — CC/BCC, Subject, Body, MIME header\n- **Code Injection** — PHP eval, Python exec, Ruby eval, Node eval, Perl eval\n- **ORM Injection** — HQL (Hibernate), ActiveRecord, Doctrine DQL, Prisma type confusion\n- **JSON Injection** — Key injection, Nested object, Array manipulation, NoSQL operator via JSON\n- **Prompt Injection** — Direct, Indirect, Goal hijacking, Context manipulation, Jailbreaking, Data exfiltration\n\n### CAT-02 · Broken Access Control · CRITICAL\n- **IDOR** — Numeric, Hash/GUID, Indirect, Chained, Blind, HTTP method switch\n- **Path / Directory Traversal** — Classic (../), URL-encoded, Double-encoded, UTF-8, Windows (..\\\\), Null byte\n- **Privilege Escalation** — Horizontal, Vertical, Role parameter, Admin direct access\n- **Forced Browsing** — Unlinked resource, Predictable URL, Backup file exposure\n- **Missing Function Level Access Control** — Hidden admin, API endpoint without auth, Unpublished endpoint\n- **Parameter Tampering** — Cookie, Hidden field, URL parameter, JSON body\n- **Mass Assignment** — Rails, Spring MVC, Django, JavaScript object injection\n- **Open Redirect** — URL-based, Header-based, JavaScript, Meta refresh\n\n### CAT-03 · XSS & Client-Side · HIGH\n- **Reflected XSS** — Classic, Attribute context, JS context, URL context, CSS context, JSON response\n- **Stored XSS** — Comment/forum, Profile field, File upload (SVG/HTML), DOM stored, Second-order\n- **DOM-Based XSS** — document.write, innerHTML, window.location, eval(), postMessage, location.hash\n- **Blind XSS** — Admin panel, Log viewer, PDF export, Email template\n- **Mutation XSS (mXSS)** — innerHTML, DOMPurify bypass, HTML parser differential\n- **Universal XSS (UXSS)** — Browser extension, SOP bypass\n- **CSP Bypass** — JSONP endpoint, Nonce bypass (bfcache), Angular/React bypass, Script gadget, Trusted Types, Base URI\n- **Prototype Pollution → XSS** — Client-side PP, Library gadget chain\n- **Dangling Markup** — img src, a href, form action\n- **XSSI** — JSON hijacking, Callback XSSI, Dynamic JS XSSI\n\n### CAT-04 · Authentication & Session · CRITICAL\n- **Credential Attacks** — Brute force, Credential stuffing, Password spraying, Dictionary, Rainbow table\n- **Session Hijacking** — Cookie theft via XSS, Session fixation, Session prediction, Cookie tossing, Insecure cookie attributes\n- **JWT Attacks** — alg:none, RS256→HS256 confusion, kid injection (SQL/Path), jku/jwks injection, Weak secret brute force, Expiry bypass, Embedded JWK\n- **Password Reset Attacks** — Token predictability, Host header injection, Dangling markup, Account enumeration, Race condition on token\n- **MFA Bypass** — TOTP brute force, Response manipulation, Backup code abuse, OAuth flow bypass, SIM swapping\n- **Authentication Bypass** — SQL auth bypass, HTTP response manipulation, Type confusion, Null byte, Parameter pollution\n- **Account Enumeration** — Login error, Registration, Password reset, Timing-based\n\n### CAT-05 · SSRF · CRITICAL\n- **Basic SSRF** — Internal IP probing, Localhost service access, Cloud metadata (AWS IMDSv1), Cloud metadata (GCP/Azure), Internal service discovery\n- **Blind SSRF** — DNS-based OOB, HTTP-based, Time-based, Error-differential\n- **SSRF via Protocol Smuggling** — file://, gopher://, dict://, ftp://, ldap://, sftp://\n- **SSRF Filter Bypass** — IP encoding, DNS rebinding, URL shortener, Redirect-based, IPv6, HTTPS downgrade\n- **SSRF → RCE Chains** — Redis, Memcached, IMDSv1→credentials→RCE, Internal admin→RCE, Kubernetes API\n\n### CAT-06 · Security Misconfiguration · HIGH\n- Default credentials, CORS misconfiguration, HTTP security headers, Cloud storage, Debug/error exposure, Directory listing, Sensitive file exposure\n\n### CAT-07 · Cryptographic Attacks · HIGH\n- Padding oracle, Protocol downgrade (BEAST/CRIME/DROWN/FREAK/Logjam/Sweet32), Hash/MAC attacks, Timing attacks, Block cipher mode attacks, JWT cryptographic\n\n### CAT-08 · Insecure Deserialization · CRITICAL\n- Java (CommonsCollections, Spring, BeanUtils, JBoss, WebLogic, Groovy, JNDI)\n- PHP Object Injection (wakeup, destruct, POP chain, Phar)\n- Python (pickle, PyYAML, marshal)\n- Ruby Marshal\n- .NET (BinaryFormatter, DataContractSerializer, ViewState, JSON.NET)\n- Node.js (node-serialize, serialize-javascript, __proto__)\n- YAML/XML (SnakeYAML, PyYAML, XStream, Jackson)\n\n### CAT-09 · File & Resource Manipulation · HIGH\n- File upload attacks, LFI, RFI, XXE (all variants), Archive/path traversal\n\n### CAT-10 · Business Logic · HIGH\n- Price/value manipulation, Workflow bypass, Race condition logic, Feature/API misuse, ATO via logic\n\n### CAT-11 · HTTP Protocol Attacks · HIGH\n- HTTP Request Smuggling (CL.TE, TE.CL, TE.TE, H2.CL, H2.TE, CL.0, Chunked extension, Response queue poisoning)\n- Web Cache Poisoning, Web Cache Deception, HPP, Host Header Injection, HTTP Method abuse\n\n### CAT-12 · API Security · CRITICAL\n- BOLA, Broken function level auth, Excessive data exposure, Mass assignment via API, Rate limit bypass, Credential leakage, GraphQL attacks\n\n### CAT-13 · OAuth & Identity · CRITICAL\n- OAuth 2.0 attacks, OIDC attacks, SAML attacks, Account takeover via identity flows\n\n### CAT-14 · WebSocket Attacks · MEDIUM\n- CSWSH, Message injection, Auth/session attacks, DoS\n\n### CAT-15 · Prototype Pollution · HIGH\n- Client-side PP, Server-side PP, PP → gadget chains, Class pollution\n\n### CAT-16 · Race Conditions · HIGH\n- TOCTOU, Limit override, Double spend, Parallel request techniques\n\n### CAT-17 · Information Disclosure · MEDIUM\n- Error-based disclosure, Timing side channels, XS-Leaks, Source/config exposure, API spec exposure\n\n### CAT-18 · Clickjacking & UI Redress · MEDIUM\n- Classic clickjacking, Advanced (SVG filter, extension), UI redress variants\n\n### CAT-19 · Supply Chain · HIGH\n- Dependency attacks, Build system compromise, CDN/third-party script attacks\n\n### CAT-20 · Application DoS · MEDIUM\n- ReDoS, XML/JSON/archive bombs, Application logic DoS, Slow HTTP attacks, CPDoS\n\n### CAT-21 · CSRF · MEDIUM\n- Classic CSRF, Login CSRF, CSRF token bypass, Same-site gadget chains\n\n### CAT-22 · Emerging Attacks · HIGH\n- HTTP/2 & HTTP/3 attacks, Subdomain takeover, DNS rebinding, SMTP smuggling, Browser/platform side channels\n\n</details>\n\n---\n\n## Machine-Readable Taxonomy (JSON)\n\n<details>\n<summary><code>taxonomy.json — Full taxonomy for AI agents</code></summary>\n\n```json\n{\n  \"schema_version\": \"1.0\",\n  \"domain\": \"web_application\",\n  \"total_categories\": 22,\n  \"total_types\": 133,\n  \"total_subtypes\": 665,\n  \"categories\": [\n    {\n      \"id\": \"CAT-01\",\n      \"name\": \"Injection Attacks\",\n      \"severity\": \"CRITICAL\",\n      \"owasp_top10_2025\": \"A05\",\n      \"cwe_primary\": [\"CWE-74\", \"CWE-89\", \"CWE-78\", \"CWE-90\", \"CWE-94\", \"CWE-917\"],\n      \"capec\": [\"CAPEC-152\"],\n      \"type_count\": 15,\n      \"types\": [\n        {\n          \"id\": \"CAT-01-T01\",\n          \"name\": \"SQL Injection\",\n          \"cwe\": [\"CWE-89\"],\n          \"capec\": [\"CAPEC-66\"],\n          \"subtypes\": [\n            {\"id\": \"CAT-01-T01-S01\", \"name\": \"Classic / In-Band SQLi\"},\n            {\"id\": \"CAT-01-T01-S02\", \"name\": \"Error-Based SQLi\"},\n            {\"id\": \"CAT-01-T01-S03\", \"name\": \"Union-Based SQLi\"},\n            {\"id\": \"CAT-01-T01-S04\", \"name\": \"Boolean-Based Blind SQLi\"},\n            {\"id\": \"CAT-01-T01-S05\", \"name\": \"Time-Based Blind SQLi\"},\n            {\"id\": \"CAT-01-T01-S06\", \"name\": \"Out-of-Band SQLi\"},\n            {\"id\": \"CAT-01-T01-S07\", \"name\": \"Second-Order SQLi\"},\n            {\"id\": \"CAT-01-T01-S08\", \"name\": \"Stacked Queries SQLi\"},\n            {\"id\": \"CAT-01-T01-S09\", \"name\": \"JSON-Context SQLi\"},\n            {\"id\": \"CAT-01-T01-S10\", \"name\": \"XML-Context SQLi\"},\n            {\"id\": \"CAT-01-T01-S11\", \"name\": \"ORM SQLi\"},\n            {\"id\": \"CAT-01-T01-S12\", \"name\": \"INTO OUTFILE / DUMPFILE\"}\n          ]\n        },\n        {\n          \"id\": \"CAT-01-T02\",\n          \"name\": \"NoSQL Injection\",\n          \"cwe\": [\"CWE-943\"],\n          \"capec\": [\"CAPEC-676\"],\n          \"subtypes\": [\n            {\"id\": \"CAT-01-T02-S01\", \"name\": \"MongoDB Operator Injection\"},\n            {\"id\": \"CAT-01-T02-S02\", \"name\": \"JavaScript Injection (MongoDB)\"},\n            {\"id\": \"CAT-01-T02-S03\", \"name\": \"Array / Object Injection\"},\n            {\"id\": \"CAT-01-T02-S04\", \"name\": \"Blind NoSQL Injection\"},\n            {\"id\": \"CAT-01-T02-S05\", \"name\": \"Firebase Injection\"}\n          ]\n        },\n        {\n          \"id\": \"CAT-01-T03\",\n          \"name\": \"OS Command Injection\",\n          \"cwe\": [\"CWE-78\"],\n          \"capec\": [\"CAPEC-88\"],\n          \"subtypes\": [\n            {\"id\": \"CAT-01-T03-S01\", \"name\": \"Classic Command Injection\"},\n            {\"id\": \"CAT-01-T03-S02\", \"name\": \"Blind Command Injection\"},\n            {\"id\": \"CAT-01-T03-S03\", \"name\": \"Time-Based Blind CI\"},\n            {\"id\": \"CAT-01-T03-S04\", \"name\": \"Out-of-Band CI\"},\n            {\"id\": \"CAT-01-T03-S05\", \"name\": \"Argument Injection\"}\n          ]\n        },\n        {\n          \"id\": \"CAT-01-T04\",\n          \"name\": \"SSTI\",\n          \"cwe\": [\"CWE-94\", \"CWE-1336\"],\n          \"capec\": [\"CAPEC-242\"],\n          \"subtypes\": [\n            {\"id\": \"CAT-01-T04-S01\", \"name\": \"Jinja2 SSTI\"},\n            {\"id\": \"CAT-01-T04-S02\", \"name\": \"Twig SSTI\"},\n            {\"id\": \"CAT-01-T04-S03\", \"name\": \"Freemarker SSTI\"},\n            {\"id\": \"CAT-01-T04-S04\", \"name\": \"Velocity SSTI\"},\n            {\"id\": \"CAT-01-T04-S05\", \"name\": \"Handlebars SSTI\"},\n            {\"id\": \"CAT-01-T04-S06\", \"name\": \"Pebble SSTI\"},\n            {\"id\": \"CAT-01-T04-S07\", \"name\": \"ERB SSTI\"},\n            {\"id\": \"CAT-01-T04-S08\", \"name\": \"Smarty SSTI\"},\n            {\"id\": \"CAT-01-T04-S09\", \"name\": \"Mako SSTI\"}\n          ]\n        }\n      ]\n    },\n    {\n      \"id\": \"CAT-05\",\n      \"name\": \"Server-Side Request Forgery\",\n      \"severity\": \"CRITICAL\",\n      \"owasp_top10_2025\": \"A01\",\n      \"cwe_primary\": [\"CWE-918\"],\n      \"capec\": [\"CAPEC-664\"],\n      \"type_count\": 5\n    },\n    {\n      \"id\": \"CAT-11\",\n      \"name\": \"HTTP Protocol Attacks\",\n      \"severity\": \"HIGH\",\n      \"owasp_top10_2025\": \"N/A\",\n      \"cwe_primary\": [\"CWE-444\", \"CWE-345\"],\n      \"capec\": [\"CAPEC-33\"],\n      \"type_count\": 6\n    },\n    {\n      \"id\": \"CAT-12\",\n      \"name\": \"API Security Attacks\",\n      \"severity\": \"CRITICAL\",\n      \"owasp_top10_2025\": \"A01\",\n      \"cwe_primary\": [\"CWE-285\", \"CWE-200\"],\n      \"capec\": [\"CAPEC-62\"],\n      \"type_count\": 7\n    }\n  ]\n}\n```\n\n</details>\n", "changelog": "<div align=\"center\">\n\n![Changelog](https://img.shields.io/badge/GORGE-Changelog-333333?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n---\n\n## Versioning\n\nFormat: `YYYY-MM-DD | vX.Y | Description`\n\n- **Major (X):** New domain added (e.g., Mobile Phase 2)\n- **Minor (Y):** New attack category or type completed\n- **Patch:** Individual subtype page added or updated\n\n---\n\n## [v0.1.0] — 2025 — Initial Release\n\n### Added\n- Full wiki infrastructure: Home, Sidebar, About, Taxonomy, Templates\n- Complete web application attack taxonomy (22 categories, 133 types, 665+ subtypes)\n- CAT-01 Injection Attacks — category overview and structure\n- All category README skeletons (CAT-01 through CAT-22)\n- Resource pages: Tools Index, Lab Environments, References Master, Methodology\n- AI agent metadata schema v1.0\n- Subtype, Type, and Category page templates\n\n### Taxonomy Sources\n- OWASP Top 10:2025 (confirmed January 2026, 515,000+ applications)\n- OWASP WSTG 4.2\n- CAPEC Mechanisms of Attack (MITRE)\n- CWE Database (MITRE)\n- PortSwigger Web Security Research 2024/2025\n- NIST NVD\n\n---\n\n## Planned\n\n| Version | Content |\n|---------|---------|\n| v0.2.0 | CAT-01 SQLi — All 6 subtypes (full depth) |\n| v0.3.0 | CAT-01 SSTI — All 9 template engines |\n| v0.4.0 | CAT-11 HTTP Request Smuggling — All variants |\n| v0.5.0 | CAT-05 SSRF — Full coverage + cloud chains |\n| v0.6.0 | CAT-04 JWT Attacks — Algorithm confusion deep dive |\n| v1.0.0 | CAT-01 through CAT-05 fully complete |\n| v2.0.0 | Mobile Application Phase 2 launch |\n", "tools": "<div align=\"center\">\n\n![Tools Index](https://img.shields.io/badge/GORGE-Tools%20Index-333333?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n# Tools Index\n\n> All offensive security tools referenced in this database, organized by category. Each entry includes install instructions and a key usage command. Updated as new tools are added per attack subtype.\n\n---\n\n## Injection\n\n| Tool | Category | Purpose | Install |\n|------|---------|---------|---------|\n| [sqlmap](https://sqlmap.org) | SQLi | Automated SQL injection detection & exploitation | `pip install sqlmap` |\n| [SQLNinja](http://sqlninja.sourceforge.net) | SQLi | MSSQL-focused SQLi exploitation | Package managers |\n| [NoSQLMap](https://github.com/codingo/NoSQLMap) | NoSQLi | Automated NoSQL injection & exploitation | `pip install nosqlmap` |\n| [commix](https://github.com/commixproject/commix) | CMDi | Automated command injection & exploitation | `pip install commix` |\n| [tplmap](https://github.com/epinna/tplmap) | SSTI | Server-side template injection detection | `pip install tplmap` |\n| [SSTImap](https://github.com/vladko312/SSTImap) | SSTI | Modern SSTI scanner (supports more engines) | `pip install sstimap` |\n\n---\n\n## Scanners & Proxies\n\n| Tool | Purpose | Install |\n|------|---------|---------|\n| [Burp Suite Pro](https://portswigger.net/burp) | Full-featured web proxy & scanner | Download from PortSwigger |\n| [OWASP ZAP](https://zaproxy.org) | Open-source web proxy & scanner | `apt install zaproxy` |\n| [Caido](https://caido.io) | Modern web proxy alternative | Download binary |\n| [Nuclei](https://github.com/projectdiscovery/nuclei) | Template-based vulnerability scanner | `go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest` |\n\n---\n\n## Reconnaissance\n\n| Tool | Purpose | Install |\n|------|---------|---------|\n| [ffuf](https://github.com/ffuf/ffuf) | Fast web fuzzer | `go install github.com/ffuf/ffuf/v2@latest` |\n| [feroxbuster](https://github.com/epi052/feroxbuster) | Recursive content discovery | `cargo install feroxbuster` |\n| [httpx](https://github.com/projectdiscovery/httpx) | HTTP probing | `go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest` |\n| [gau](https://github.com/lc/gau) | Known URL fetcher | `go install github.com/lc/gau/v2/cmd/gau@latest` |\n| [waybackurls](https://github.com/tomnomnom/waybackurls) | Fetch Wayback Machine URLs | `go install github.com/tomnomnom/waybackurls@latest` |\n\n---\n\n## XSS\n\n| Tool | Purpose | Install |\n|------|---------|---------|\n| [XSStrike](https://github.com/s0md3v/XSStrike) | Advanced XSS scanner | `pip install xsstrike` |\n| [dalfox](https://github.com/hahwul/dalfox) | Parameter analysis & XSS scanner | `go install github.com/hahwul/dalfox/v2@latest` |\n| [kxss](https://github.com/tomnomnom/kxss) | Reflect XSS parameter finder | `go install github.com/tomnomnom/kxss@latest` |\n| [bxss](https://github.com/ethicalhackingplayground/bxss) | Blind XSS injector | `go install github.com/ethicalhackingplayground/bxss@latest` |\n\n---\n\n## SSRF\n\n| Tool | Purpose | Install |\n|------|---------|---------|\n| [SSRFmap](https://github.com/swisskyrepo/SSRFmap) | SSRF detection & exploitation | `pip install ssrfmap` |\n| [Gopherus](https://github.com/tarunkant/Gopherus) | Generate gopher:// SSRF payloads | `pip install gopherus` |\n| [interactsh](https://github.com/projectdiscovery/interactsh) | OOB interaction server | `go install -v github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest` |\n| [Burp Collaborator](https://portswigger.net/burp/documentation/collaborator) | OOB DNS/HTTP callbacks | Built into Burp Suite Pro |\n\n---\n\n## Authentication\n\n| Tool | Purpose | Install |\n|------|---------|---------|\n| [jwt_tool](https://github.com/ticarpi/jwt_tool) | JWT testing & exploitation | `pip install jwt_tool` |\n| [hashcat](https://hashcat.net) | Password hash cracking | `apt install hashcat` |\n| [hydra](https://github.com/vanhauser-thc/thc-hydra) | Online brute-forcing | `apt install hydra` |\n| [ffuf](https://github.com/ffuf/ffuf) | Credential stuffing & brute force | See Recon section |\n\n---\n\n## HTTP Protocol\n\n| Tool | Purpose | Install |\n|------|---------|---------|\n| [smuggler](https://github.com/defparam/smuggler) | HTTP request smuggling | `pip install smuggler` |\n| [HTTP Request Smuggler (Burp ext.)](https://portswigger.net/bappstore/aaaa60ef945341e8a450217a54a11646) | Smuggling via Burp | Burp Suite BApp Store |\n| [param-miner (Burp ext.)](https://portswigger.net/bappstore/17d2949a985c4b7ca092728dba871943) | Cache poisoning parameter discovery | Burp Suite BApp Store |\n\n---\n\n## Deserialization\n\n| Tool | Purpose | Install |\n|------|---------|---------|\n| [ysoserial](https://github.com/frohoff/ysoserial) | Java deserialization gadget chain generator | Download JAR |\n| [PHPGGC](https://github.com/ambionics/phpggc) | PHP gadget chain generator | `git clone` |\n| [Deserialization Scanner (Burp)](https://portswigger.net/bappstore/93e05132f0a64c92bf8f21ef41c5e8a9) | Automated Java deserialization detection | Burp Suite BApp Store |\n\n---\n\n## Wordlists & Payloads\n\n| Resource | Description | URL |\n|---------|-------------|-----|\n| SecLists | The largest collection of security testing lists | [github.com/danielmiessler/SecLists](https://github.com/danielmiessler/SecLists) |\n| PayloadsAllTheThings | Payloads for every attack type | [github.com/swisskyrepo/PayloadsAllTheThings](https://github.com/swisskyrepo/PayloadsAllTheThings) |\n| FuzzDB | Attack patterns and payloads | [github.com/fuzzdb-project/fuzzdb](https://github.com/fuzzdb-project/fuzzdb) |\n| IntruderPayloads | Burp Suite intruder payload lists | [github.com/1N3/IntruderPayloads](https://github.com/1N3/IntruderPayloads) |\n", "labs": "<div align=\"center\">\n\n![Lab Environments](https://img.shields.io/badge/GORGE-Lab%20Environments-333333?style=for-the-badge&labelColor=0d0d0d)\n\n</div>\n\n# Lab Environments\n\n> Practice environments for every attack category in this database. No theory without practice.\n\n---\n\n## Online Platforms (No Setup Required)\n\n| Platform | Best For | URL | Cost |\n|---------|---------|-----|------|\n| **PortSwigger Web Security Academy** | Web attacks — all categories, lab-aligned with research | [portswigger.net/web-security](https://portswigger.net/web-security) | Free |\n| **HackTheBox** | Real-world machines, CTF-style, active community | [hackthebox.com](https://hackthebox.com) | Free / Pro |\n| **TryHackMe** | Guided learning paths, beginner-friendly | [tryhackme.com](https://tryhackme.com) | Free / Pro |\n| **PentesterLab** | Web-specific, badge-based, good for injection | [pentesterlab.com](https://pentesterlab.com) | Free / Pro |\n| **OWASP WebGoat** | Deliberately insecure — all OWASP top 10 | [webgoat.github.io](https://webgoat.github.io) | Free |\n| **Root Me** | Challenges across many categories | [root-me.org](https://root-me.org) | Free |\n| **BugBountyHunter** | Real-world web app labs | [bugbountyhunter.com](https://bugbountyhunter.com) | Free / Pro |\n\n---\n\n## Self-Hosted Vulnerable Apps\n\n| App | Covers | Setup |\n|-----|--------|-------|\n| **DVWA** (Damn Vulnerable Web App) | SQLi, XSS, CSRF, File inclusion, Command injection | `docker run -p 80:80 vulnerables/web-dvwa` |\n| **bWAPP** | 100+ vulnerabilities across all categories | `docker run -p 80:80 raesene/bwapp` |\n| **WebGoat** | OWASP top 10, injection, auth, access control | `docker run -p 8080:8080 webgoat/goat-and-wolf` |\n| **Mutillidae** | OWASP top 10, injection-heavy | `docker run -p 80:80 citizenstig/nowasp` |\n| **VulnHub VMs** | Full OS-level compromise chains | [vulnhub.com](https://vulnhub.com) |\n| **Metasploitable 2/3** | Network + web services | [rapid7/metasploitable3](https://github.com/rapid7/metasploitable3) |\n| **NodeGoat** | Node.js-specific OWASP top 10 | `git clone github.com/OWASP/NodeGoat` |\n| **RailsGoat** | Rails-specific vulnerabilities | `git clone github.com/OWASP/railsgoat` |\n| **django.nV** | Django-specific vulnerabilities | `git clone github.com/nVisium/django.nV` |\n\n---\n\n## Attack-Specific Labs\n\n### SQL Injection\n- [PortSwigger SQLi Labs](https://portswigger.net/web-security/sql-injection) — 18 labs from basic to blind to OOB\n- [SQLi-labs](https://github.com/Audi-1/sqli-labs) — 75 levels, MySQL-focused\n- [DVWA SQLi module](http://www.dvwa.co.uk/) — Low/Medium/High/Impossible difficulty levels\n\n### SSTI\n- [PortSwigger SSTI Labs](https://portswigger.net/web-security/server-side-template-injection) — Covers Jinja2, Twig, Freemarker, Smarty\n- [TryHackMe — SSTI](https://tryhackme.com/room/learnssti)\n\n### SSRF\n- [PortSwigger SSRF Labs](https://portswigger.net/web-security/ssrf) — Basic to blind to protocol smuggling\n- [SSRFire](https://github.com/micha3lb3n/SSRFire) — Automated SSRF testing\n\n### XSS\n- [PortSwigger XSS Labs](https://portswigger.net/web-security/cross-site-scripting) — 30+ labs including mXSS, CSP bypass, DOM\n- [XSS Game (Google)](https://xss-game.appspot.com) — 6-level XSS challenge\n- [KNOXSS Playground](https://knoxss.me) — XSS testing environment\n\n### HTTP Request Smuggling\n- [PortSwigger Request Smuggling Labs](https://portswigger.net/web-security/request-smuggling) — CL.TE, TE.CL, H2 variants\n\n### Deserialization\n- [PortSwigger Deserialization Labs](https://portswigger.net/web-security/deserialization) — Java, PHP, custom gadget chains\n\n### OAuth / JWT\n- [PortSwigger OAuth Labs](https://portswigger.net/web-security/oauth)\n- [PortSwigger JWT Labs](https://portswigger.net/web-security/jwt)\n\n---\n\n## CTF Platforms (Competitive)\n\n| Platform | Style | URL |\n|---------|-------|-----|\n| CTFtime | Upcoming CTF event tracker | [ctftime.org](https://ctftime.org) |\n| picoCTF | Educational, beginner-friendly | [picoctf.org](https://picoctf.org) |\n| pwn.college | Systematic skill development | [pwn.college](https://pwn.college) |\n| HackTheBox CTF | Active competition labs | [hackthebox.com](https://hackthebox.com) |\n\n---\n\n## Bug Bounty Programs (Real-World Practice)\n\nFor legal real-world practice on production applications:\n\n| Program | Scope | Platform |\n|---------|-------|---------|\n| HackerOne Public Programs | Wide scope | [hackerone.com](https://hackerone.com/bug-bounty-programs) |\n| Bugcrowd Public Programs | Wide scope | [bugcrowd.com/programs](https://bugcrowd.com/programs) |\n| Intigriti Public Programs | EU-focused | [intigriti.com](https://app.intigriti.com/programs) |\n| YesWeHack | EU-focused | [yeswehack.com](https://www.yeswehack.com) |\n| Open Bug Bounty | Non-intrusive XSS / CSRF only | [openbugbounty.org](https://www.openbugbounty.org) |\n\n> Always read program scope and rules before testing. Testing outside scope is illegal.\n"}};
+"use strict";
 
-
-var currentFilter = "all";
 var currentPage = "home";
+var currentFilter = "all";
 
-function initApp() {
-  mermaid.initialize({
-    startOnLoad: false,
-    theme: "dark",
-    themeVariables: {
-      background: "#0d0d0d",
-      primaryColor: "#cc0000",
-      lineColor: "#cc0000",
-      primaryTextColor: "#cccccc",
-      secondaryTextColor: "#999999",
-      tertiaryColor: "#1a1a1a"
-    }
-  });
-  marked.setOptions({
-    highlight: function(code, lang) {
-      if (lang && hljs.getLanguage(lang)) {
-        return hljs.highlight(code, {language: lang}).value;
-      }
-      return hljs.highlightAuto(code).value;
-    },
-    breaks: false,
-    gfm: true
-  });
-  buildSidebar();
-  initRouter();
-  initSearch();
+/* ===== CATEGORY DATA ===== */
+var CATEGORIES = [
+  {id:"CAT-01",name:"Injection Attacks",slug:"cat-01",severity:"CRITICAL",typeCount:15,types:["SQL Injection","NoSQL Injection","OS Command Injection","SSTI","LDAP Injection","XPath Injection","EL / OGNL Injection","XML Injection","HTML Injection","CRLF / HTTP Header Injection","SMTP Injection","Code Injection","ORM Injection","JSON Injection","Prompt Injection"]},
+  {id:"CAT-02",name:"Broken Access Control",slug:"cat-02",severity:"CRITICAL",typeCount:8,types:["IDOR","Path / Directory Traversal","Privilege Escalation","Forced Browsing","Missing Function Level Access Control","Parameter Tampering","Mass Assignment","Open Redirect"]},
+  {id:"CAT-03",name:"XSS & Client-Side Attacks",slug:"cat-03",severity:"HIGH",typeCount:10,types:["Reflected XSS","Stored XSS","DOM-Based XSS","Blind XSS","Mutation XSS (mXSS)","Universal XSS (UXSS)","CSP Bypass","Prototype Pollution to XSS","Dangling Markup","XSSI"]},
+  {id:"CAT-04",name:"Authentication & Session Attacks",slug:"cat-04",severity:"CRITICAL",typeCount:7,types:["Credential Attacks","Session Hijacking","JWT Attacks","Password Reset Attacks","MFA Bypass","Authentication Bypass","Account Enumeration"]},
+  {id:"CAT-05",name:"Server-Side Request Forgery (SSRF)",slug:"cat-05",severity:"CRITICAL",typeCount:5,types:["Basic SSRF","Blind SSRF","SSRF via Protocol Smuggling","SSRF Filter Bypass","SSRF to RCE Chains"]},
+  {id:"CAT-06",name:"Security Misconfiguration",slug:"cat-06",severity:"HIGH",typeCount:7,types:["Default Credentials","CORS Misconfiguration","HTTP Security Headers","Cloud Storage Exposure","Debug/Error Exposure","Directory Listing","Sensitive File Exposure"]},
+  {id:"CAT-07",name:"Cryptographic Attacks",slug:"cat-07",severity:"HIGH",typeCount:6,types:["Padding Oracle","Protocol Downgrade","Hash/MAC Attacks","Timing Attacks","Block Cipher Mode Attacks","JWT Cryptographic"]},
+  {id:"CAT-08",name:"Insecure Deserialization",slug:"cat-08",severity:"CRITICAL",typeCount:7,types:["Java Deserialization","PHP Object Injection","Python Deserialization","Ruby Marshal",".NET Deserialization","Node.js Deserialization","YAML/XML Deserialization"]},
+  {id:"CAT-09",name:"File & Resource Manipulation",slug:"cat-09",severity:"HIGH",typeCount:5,types:["File Upload Attacks","Local File Inclusion (LFI)","Remote File Inclusion (RFI)","XXE (XML External Entity)","Archive/Path Traversal"]},
+  {id:"CAT-10",name:"Business Logic Attacks",slug:"cat-10",severity:"HIGH",typeCount:5,types:["Price/Value Manipulation","Workflow Bypass","Race Condition Logic","Feature/API Misuse","ATO via Logic"]},
+  {id:"CAT-11",name:"HTTP Protocol Attacks",slug:"cat-11",severity:"HIGH",typeCount:6,types:["HTTP Request Smuggling","Web Cache Poisoning","Web Cache Deception","HTTP Parameter Pollution","Host Header Injection","HTTP Method Abuse"]},
+  {id:"CAT-12",name:"API Security Attacks",slug:"cat-12",severity:"CRITICAL",typeCount:7,types:["BOLA","Broken Function Level Auth","Excessive Data Exposure","Mass Assignment via API","Rate Limit Bypass","Credential Leakage","GraphQL Attacks"]},
+  {id:"CAT-13",name:"OAuth & Identity Protocol Attacks",slug:"cat-13",severity:"CRITICAL",typeCount:4,types:["OAuth 2.0 Attacks","OIDC Attacks","SAML Attacks","Account Takeover via Identity Flows"]},
+  {id:"CAT-14",name:"WebSocket Attacks",slug:"cat-14",severity:"MEDIUM",typeCount:4,types:["CSWSH","Message Injection","Auth/Session Attacks","WebSocket DoS"]},
+  {id:"CAT-15",name:"Prototype Pollution",slug:"cat-15",severity:"HIGH",typeCount:4,types:["Client-Side PP","Server-Side PP","PP Gadget Chains","Class Pollution"]},
+  {id:"CAT-16",name:"Race Conditions & Concurrency",slug:"cat-16",severity:"HIGH",typeCount:4,types:["TOCTOU","Limit Override","Double Spend","Parallel Request Techniques"]},
+  {id:"CAT-17",name:"Information Disclosure & Side Channels",slug:"cat-17",severity:"MEDIUM",typeCount:5,types:["Error-Based Disclosure","Timing Side Channels","XS-Leaks","Source/Config Exposure","API Spec Exposure"]},
+  {id:"CAT-18",name:"Clickjacking & UI Redress",slug:"cat-18",severity:"MEDIUM",typeCount:3,types:["Classic Clickjacking","Advanced Clickjacking","UI Redress Variants"]},
+  {id:"CAT-19",name:"Supply Chain Attacks",slug:"cat-19",severity:"HIGH",typeCount:3,types:["Dependency Attacks","Build System Compromise","CDN/Third-Party Script Attacks"]},
+  {id:"CAT-20",name:"Denial of Service (App Layer)",slug:"cat-20",severity:"MEDIUM",typeCount:5,types:["ReDoS","XML/JSON/Archive Bombs","Application Logic DoS","Slow HTTP Attacks","CPDoS"]},
+  {id:"CAT-21",name:"Cross-Site Request Forgery (CSRF)",slug:"cat-21",severity:"MEDIUM",typeCount:4,types:["Classic CSRF","Login CSRF","CSRF Token Bypass","Same-Site Gadget Chains"]},
+  {id:"CAT-22",name:"Emerging & Protocol-Level Attacks",slug:"cat-22",severity:"HIGH",typeCount:5,types:["HTTP/2 & HTTP/3 Attacks","Subdomain Takeover","DNS Rebinding","SMTP Smuggling","Browser/Platform Side Channels"]}
+];
+
+/* ===== WIKI CONTENT (embedded) ===== */
+var PAGES = {};
+
+PAGES.home = "## What is GORGE?\n\n**GORGE** is a comprehensive, research-grade application security vulnerability database. Every entry is built from primary sources -- CVEs, academic papers, real-world bug bounty writeups, and original research -- not aggregated summaries.\n\nThis is not a marketing resource. There is no fluff. Every page answers: **what it is, how it works, how to find it, how to exploit it, and how to fix it** -- at every skill level from foundational to elite.\n\n**Designed for three audiences, simultaneously:**\n- **AI Agents** -- machine-readable metadata, structured JSON blocks, consistent taxonomy IDs\n- **Security Researchers** -- full payloads, exploitation chains, real CVE references, tool commands\n- **Learners** -- progressive depth, explained context, lab environments, visual attack flows\n\n---\n\n## Scope\n\n| Domain | Status | Categories | Types | Subtypes |\n|--------|--------|-----------|-------|--------|\n| **Web Application** | Active | 22 | 133 | 665+ |\n| **Mobile Application** | Planned | -- | -- | -- |\n| **API Security** | Partial (under Web) | Included | Included | Included |\n\n---\n\n## Standards & Cross-References\n\n| Standard | Coverage |\n|----------|--------|\n| **OWASP Top 10:2025** | Full mapping |\n| **OWASP WSTG 4.2** | Test case IDs |\n| **CAPEC** | Attack pattern IDs |\n| **CWE** | Weakness IDs per subtype |\n| **CVSS v3.1** | Base scores where applicable |\n| **MITRE ATT&CK** | TTP mappings (where applicable) |\n\n---\n\n## For AI Agents\n\nEvery subtype page contains a machine-readable JSON metadata block:\n\n```json\n{\n  \"id\": \"WEB-CAT01-SQLi-BlindBoolean\",\n  \"category\": \"Injection Attacks\",\n  \"type\": \"SQL Injection\",\n  \"subtype\": \"Boolean-Based Blind SQLi\",\n  \"cwe\": [\"CWE-89\"],\n  \"capec\": [\"CAPEC-7\"],\n  \"cvss_base\": 9.8,\n  \"severity\": \"CRITICAL\",\n  \"owasp_top10_2025\": \"A05\",\n  \"skill_level\": \"intermediate\",\n  \"tags\": [\"sqli\", \"blind\", \"boolean\", \"database\", \"injection\"]\n}\n```\n\nThe Taxonomy page provides the complete enumeration in JSON format for programmatic consumption.\n\n---\n\n## Contributing & Quality Standard\n\nAll content must:\n- Be sourced from primary technical references (no marketing blogs)\n- Include working payloads tested against known-vulnerable environments\n- Reference real CVEs or bug bounty reports where applicable";
+
+PAGES.about = "# About GORGE\n\n---\n\n## What This Is\n\nGORGE is a structured, research-grade vulnerability database focused exclusively on **application security**. It is built for depth, not breadth of surface coverage. Every topic receives focused research before a single page is written.\n\n**Core principles:**\n- One topic at a time. Quality and depth over speed.\n- Primary sources only -- CVEs, academic papers, bug bounty writeups, original PoCs.\n- No marketing content. No \"Top 10 tips\" padding. No AI-generated filler.\n- Every payload is real. Every tool command is tested or sourced from confirmed writeups.\n- All content is verifiable -- every claim has a reference.\n\n---\n\n## Scope\n\n### Phase 1 -- Web Application Security\n22 attack categories covering the full modern web attack surface. Based on cross-referencing:\n- OWASP Top 10:2025\n- OWASP Web Security Testing Guide (WSTG) 4.2\n- CAPEC Mechanisms of Attack taxonomy\n- MITRE CWE database\n- PortSwigger Web Security Research (2019-2025)\n- Real-world bug bounty reports (HackerOne, Bugcrowd disclosures)\n\n### Phase 2 -- Mobile Application Security *(Planned)*\nCovering iOS and Android attack surfaces:\n- OWASP Mobile Top 10\n- MASTG (Mobile Application Security Testing Guide)\n- Runtime manipulation, certificate pinning bypass, IPC attacks\n\n---\n\n## How Pages Are Structured\n\nEvery attack subtype page follows an identical schema:\n\n```\nOverview > Attack Surface > How It Works > Detection & Validation\n> Techniques (Beginner > Advanced) > Tools > Payload Crafting\n> Exploitation > Variations > Real-World Examples\n> Defenses > References > AI Metadata Block\n```\n\n---\n\n## Skill Level Framework\n\n| Level | Description | Who it's for |\n|-------|-------------|-------------|\n| **Foundational** | Core concept, basic detection, standard tool usage | New to the topic |\n| **Intermediate** | WAF bypass, manual exploitation, chaining | Practicing researcher |\n| **Advanced** | Novel techniques, edge cases, protocol-level | Senior researcher |\n| **Elite** | Cutting-edge (2023-2025 research), 0-day patterns | CTF / Red team |\n\n---\n\n## Source Quality Standards\n\n| Type | Standard |\n|------|----------|\n| **Technical Blogs** | Must be from a named researcher, include PoC or technical mechanism |\n| **Writeups** | Must be from an official disclosure or named researcher |\n| **Research Papers** | Peer-reviewed or from a recognized conference (DEF CON, Black Hat, USENIX, CCS, IEEE S&P) |\n| **YouTube** | Must be from a technical channel -- not a beginner tutorial overview |\n| **CVEs** | Must link to NVD entry + at least one technical analysis |\n\nMarketing blogs, vendor \"what is X\" summaries, and uncited claims are never used.\n\n---\n\n## Payload Policy\n\nFull, working payloads are included for all attack subtypes. This database is intended for:\n- Security researchers conducting authorized penetration tests\n- CTF players\n- Developers building secure applications\n- AI agents assisting in security research\n\nUse responsibly. Unauthorized testing is illegal.\n\n---\n\n## Version & Update Policy\n\nSee Changelog for the full update history.\n\nNew attack subtypes are researched and written one at a time. Existing pages are updated when:\n- A new technique variant is published (CVE, PortSwigger research, conference talk)\n- A new tool with significant capability is released\n- An existing payload or technique is demonstrated to be outdated";
+
+PAGES.changelog = "# Changelog\n\n---\n\n## Versioning\n\nFormat: `YYYY-MM-DD | vX.Y | Description`\n\n- **Major (X):** New domain added (e.g., Mobile Phase 2)\n- **Minor (Y):** New attack category or type completed\n- **Patch:** Individual subtype page added or updated\n\n---\n\n## [v0.1.0] -- 2025 -- Initial Release\n\n### Added\n- Full wiki infrastructure: Home, Sidebar, About, Taxonomy, Templates\n- Complete web application attack taxonomy (22 categories, 133 types, 665+ subtypes)\n- CAT-01 Injection Attacks -- category overview and structure\n- All category README skeletons (CAT-01 through CAT-22)\n- Resource pages: Tools Index, Lab Environments, References Master, Methodology\n- AI agent metadata schema v1.0\n- Subtype, Type, and Category page templates\n\n### Taxonomy Sources\n- OWASP Top 10:2025 (confirmed January 2026, 515,000+ applications)\n- OWASP WSTG 4.2\n- CAPEC Mechanisms of Attack (MITRE)\n- CWE Database (MITRE)\n- PortSwigger Web Security Research 2024/2025\n- NIST NVD\n\n---\n\n## Planned\n\n| Version | Content |\n|---------|--------|\n| v0.2.0 | CAT-01 SQLi -- All 6 subtypes (full depth) |\n| v0.3.0 | CAT-01 SSTI -- All 9 template engines |\n| v0.4.0 | CAT-11 HTTP Request Smuggling -- All variants |\n| v0.5.0 | CAT-05 SSRF -- Full coverage + cloud chains |\n| v0.6.0 | CAT-04 JWT Attacks -- Algorithm confusion deep dive |\n| v1.0.0 | CAT-01 through CAT-05 fully complete |\n| v2.0.0 | Mobile Application Phase 2 launch |";
+
+PAGES.taxonomy = "# GORGE Attack Taxonomy\n\n> Machine-readable + human-readable attack taxonomy for Web Application Security.\n> Schema version: 1.0 | Last updated: 2025\n\n---\n\n## Taxonomy Principles\n\nThis taxonomy is built from cross-referencing:\n- **OWASP Top 10:2025** -- risk categories\n- **CAPEC** -- Mechanisms of Attack hierarchy\n- **CWE** -- Weakness classification per attack\n- **OWASP WSTG 4.2** -- test case IDs\n- **Real-world attack intelligence** (PortSwigger Research 2019-2025, bug bounty disclosures)\n\nHierarchy: `Domain > Category > Type > Subtype`\n\n---\n\n## Full Taxonomy: Web Application\n\n<details>\n<summary><b>Expand Full Human-Readable Taxonomy</b></summary>\n\n### CAT-01 -- Injection Attacks -- CRITICAL\n- **SQLi** -- Classic, Union, Error, Boolean Blind, Time Blind, OOB, Second-Order, Stacked, JSON/XML context, ORM\n- **NoSQLi** -- MongoDB operator injection, JS injection, Blind NoSQLi, Firebase\n- **OS Command Injection** -- Classic, Blind, Time-based blind, OOB, Argument injection\n- **SSTI** -- Jinja2, Twig, Freemarker, Velocity, Smarty, Pebble, ERB, Handlebars, Mako\n- **LDAP Injection** -- Filter, Attribute, DN, Blind\n- **XPath Injection** -- Classic, Blind, OOB\n- **EL / OGNL Injection** -- Spring EL, OGNL (Struts), JSP EL, JSF EL, Groovy\n- **XML Injection** -- Tag, CDATA, XSL, Schema injection\n- **HTML Injection** -- Stored, Reflected, DOM-based\n- **CRLF / HTTP Header Injection** -- Response splitting, Log injection, Cookie injection, Redirect\n- **SMTP Injection** -- CC/BCC, Subject, Body, MIME header\n- **Code Injection** -- PHP eval, Python exec, Ruby eval, Node eval, Perl eval\n- **ORM Injection** -- HQL (Hibernate), ActiveRecord, Doctrine DQL, Prisma type confusion\n- **JSON Injection** -- Key injection, Nested object, Array manipulation, NoSQL operator via JSON\n- **Prompt Injection** -- Direct, Indirect, Goal hijacking, Context manipulation, Jailbreaking, Data exfiltration\n\n### CAT-02 -- Broken Access Control -- CRITICAL\n- **IDOR** -- Numeric, Hash/GUID, Indirect, Chained, Blind, HTTP method switch\n- **Path / Directory Traversal** -- Classic, URL-encoded, Double-encoded, UTF-8, Windows, Null byte\n- **Privilege Escalation** -- Horizontal, Vertical, Role parameter, Admin direct access\n- **Forced Browsing** -- Unlinked resource, Predictable URL, Backup file exposure\n- **Missing Function Level Access Control** -- Hidden admin, API endpoint without auth\n- **Parameter Tampering** -- Cookie, Hidden field, URL parameter, JSON body\n- **Mass Assignment** -- Rails, Spring MVC, Django, JavaScript object injection\n- **Open Redirect** -- URL-based, Header-based, JavaScript, Meta refresh\n\n### CAT-03 -- XSS & Client-Side -- HIGH\n- **Reflected XSS** -- Classic, Attribute context, JS context, URL context, CSS context\n- **Stored XSS** -- Comment/forum, Profile field, File upload (SVG/HTML), DOM stored\n- **DOM-Based XSS** -- document.write, innerHTML, window.location, eval(), postMessage\n- **Blind XSS** -- Admin panel, Log viewer, PDF export, Email template\n- **Mutation XSS (mXSS)** -- innerHTML, DOMPurify bypass, HTML parser differential\n- **Universal XSS (UXSS)** -- Browser extension, SOP bypass\n- **CSP Bypass** -- JSONP endpoint, Nonce bypass, Angular/React bypass, Script gadget\n- **Prototype Pollution to XSS** -- Client-side PP, Library gadget chain\n- **Dangling Markup** -- img src, a href, form action\n- **XSSI** -- JSON hijacking, Callback XSSI, Dynamic JS XSSI\n\n### CAT-04 -- Authentication & Session -- CRITICAL\n- **Credential Attacks** -- Brute force, Credential stuffing, Password spraying, Dictionary\n- **Session Hijacking** -- Cookie theft via XSS, Session fixation, Session prediction\n- **JWT Attacks** -- alg:none, RS256>HS256, kid injection, jku/jwks injection, Weak secret\n- **Password Reset Attacks** -- Token predictability, Host header injection, Dangling markup\n- **MFA Bypass** -- TOTP brute force, Response manipulation, Backup code abuse\n- **Authentication Bypass** -- SQL auth bypass, Response manipulation, Type confusion\n- **Account Enumeration** -- Login error, Registration, Password reset, Timing-based\n\n### CAT-05 -- SSRF -- CRITICAL\n- **Basic SSRF** -- Internal IP probing, Localhost access, Cloud metadata (AWS/GCP/Azure)\n- **Blind SSRF** -- DNS-based OOB, HTTP-based, Time-based, Error-differential\n- **SSRF via Protocol Smuggling** -- file://, gopher://, dict://, ftp://, ldap://\n- **SSRF Filter Bypass** -- IP encoding, DNS rebinding, URL shortener, Redirect-based\n- **SSRF to RCE Chains** -- Redis, Memcached, IMDSv1, Internal admin, Kubernetes API\n\n### CAT-06 -- Security Misconfiguration -- HIGH\nDefault credentials, CORS misconfiguration, HTTP security headers, Cloud storage, Debug/error exposure, Directory listing, Sensitive file exposure\n\n### CAT-07 -- Cryptographic Attacks -- HIGH\nPadding oracle, Protocol downgrade, Hash/MAC attacks, Timing attacks, Block cipher mode attacks, JWT cryptographic\n\n### CAT-08 -- Insecure Deserialization -- CRITICAL\nJava, PHP Object Injection, Python, Ruby Marshal, .NET, Node.js, YAML/XML\n\n### CAT-09 -- File & Resource Manipulation -- HIGH\nFile upload attacks, LFI, RFI, XXE (all variants), Archive/path traversal\n\n### CAT-10 -- Business Logic -- HIGH\nPrice/value manipulation, Workflow bypass, Race condition logic, Feature/API misuse, ATO via logic\n\n### CAT-11 -- HTTP Protocol Attacks -- HIGH\nHTTP Request Smuggling, Web Cache Poisoning, Web Cache Deception, HPP, Host Header Injection, HTTP Method abuse\n\n### CAT-12 -- API Security -- CRITICAL\nBOLA, Broken function level auth, Excessive data exposure, Mass assignment via API, Rate limit bypass, Credential leakage, GraphQL attacks\n\n### CAT-13 -- OAuth & Identity -- CRITICAL\nOAuth 2.0 attacks, OIDC attacks, SAML attacks, Account takeover via identity flows\n\n### CAT-14 -- WebSocket Attacks -- MEDIUM\nCSWSH, Message injection, Auth/session attacks, DoS\n\n### CAT-15 -- Prototype Pollution -- HIGH\nClient-side PP, Server-side PP, PP gadget chains, Class pollution\n\n### CAT-16 -- Race Conditions -- HIGH\nTOCTOU, Limit override, Double spend, Parallel request techniques\n\n### CAT-17 -- Information Disclosure -- MEDIUM\nError-based disclosure, Timing side channels, XS-Leaks, Source/config exposure, API spec exposure\n\n### CAT-18 -- Clickjacking & UI Redress -- MEDIUM\nClassic clickjacking, Advanced, UI redress variants\n\n### CAT-19 -- Supply Chain -- HIGH\nDependency attacks, Build system compromise, CDN/third-party script attacks\n\n### CAT-20 -- Application DoS -- MEDIUM\nReDoS, XML/JSON/archive bombs, Application logic DoS, Slow HTTP attacks, CPDoS\n\n### CAT-21 -- CSRF -- MEDIUM\nClassic CSRF, Login CSRF, CSRF token bypass, Same-site gadget chains\n\n### CAT-22 -- Emerging Attacks -- HIGH\nHTTP/2 & HTTP/3 attacks, Subdomain takeover, DNS rebinding, SMTP smuggling, Browser/platform side channels\n\n</details>\n\n---\n\n## Machine-Readable Taxonomy (JSON)\n\n<details>\n<summary><code>taxonomy.json -- Full taxonomy for AI agents</code></summary>\n\n```json\n{\n  \"schema_version\": \"1.0\",\n  \"domain\": \"web_application\",\n  \"total_categories\": 22,\n  \"total_types\": 133,\n  \"total_subtypes\": 665,\n  \"categories\": [\n    {\n      \"id\": \"CAT-01\",\n      \"name\": \"Injection Attacks\",\n      \"severity\": \"CRITICAL\",\n      \"owasp_top10_2025\": \"A05\",\n      \"type_count\": 15\n    },\n    {\n      \"id\": \"CAT-02\",\n      \"name\": \"Broken Access Control\",\n      \"severity\": \"CRITICAL\",\n      \"owasp_top10_2025\": \"A01\",\n      \"type_count\": 8\n    },\n    {\n      \"id\": \"CAT-03\",\n      \"name\": \"XSS & Client-Side Attacks\",\n      \"severity\": \"HIGH\",\n      \"owasp_top10_2025\": \"A05\",\n      \"type_count\": 10\n    }\n  ]\n}\n```\n\n</details>";
+
+PAGES.tools = "# Tools Index\n\n> All offensive security tools referenced in this database, organized by category. Each entry includes install instructions and a key usage command.\n\n---\n\n## Injection\n\n| Tool | Category | Purpose | Install |\n|------|---------|---------|--------|\n| [sqlmap](https://sqlmap.org) | SQLi | Automated SQL injection detection & exploitation | `pip install sqlmap` |\n| [SQLNinja](http://sqlninja.sourceforge.net) | SQLi | MSSQL-focused SQLi exploitation | Package managers |\n| [NoSQLMap](https://github.com/codingo/NoSQLMap) | NoSQLi | Automated NoSQL injection & exploitation | `pip install nosqlmap` |\n| [commix](https://github.com/commixproject/commix) | CMDi | Automated command injection & exploitation | `pip install commix` |\n| [tplmap](https://github.com/epinna/tplmap) | SSTI | Server-side template injection detection | `pip install tplmap` |\n| [SSTImap](https://github.com/vladko312/SSTImap) | SSTI | Modern SSTI scanner (supports more engines) | `pip install sstimap` |\n\n---\n\n## Scanners & Proxies\n\n| Tool | Purpose | Install |\n|------|---------|--------|\n| [Burp Suite Pro](https://portswigger.net/burp) | Full-featured web proxy & scanner | Download from PortSwigger |\n| [OWASP ZAP](https://zaproxy.org) | Open-source web proxy & scanner | `apt install zaproxy` |\n| [Caido](https://caido.io) | Modern web proxy alternative | Download binary |\n| [Nuclei](https://github.com/projectdiscovery/nuclei) | Template-based vulnerability scanner | `go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest` |\n\n---\n\n## Reconnaissance\n\n| Tool | Purpose | Install |\n|------|---------|--------|\n| [ffuf](https://github.com/ffuf/ffuf) | Fast web fuzzer | `go install github.com/ffuf/ffuf/v2@latest` |\n| [feroxbuster](https://github.com/epi052/feroxbuster) | Recursive content discovery | `cargo install feroxbuster` |\n| [httpx](https://github.com/projectdiscovery/httpx) | HTTP probing | `go install github.com/projectdiscovery/httpx/cmd/httpx@latest` |\n| [gau](https://github.com/lc/gau) | Known URL fetcher | `go install github.com/lc/gau/v2/cmd/gau@latest` |\n| [waybackurls](https://github.com/tomnomnom/waybackurls) | Fetch Wayback Machine URLs | `go install github.com/tomnomnom/waybackurls@latest` |\n\n---\n\n## XSS\n\n| Tool | Purpose | Install |\n|------|---------|--------|\n| [XSStrike](https://github.com/s0md3v/XSStrike) | Advanced XSS scanner | `pip install xsstrike` |\n| [dalfox](https://github.com/hahwul/dalfox) | Parameter analysis & XSS scanner | `go install github.com/hahwul/dalfox/v2@latest` |\n| [kxss](https://github.com/tomnomnom/kxss) | Reflect XSS parameter finder | `go install github.com/tomnomnom/kxss@latest` |\n\n---\n\n## SSRF\n\n| Tool | Purpose | Install |\n|------|---------|--------|\n| [SSRFmap](https://github.com/swisskyrepo/SSRFmap) | SSRF detection & exploitation | `pip install ssrfmap` |\n| [Gopherus](https://github.com/tarunkant/Gopherus) | Generate gopher:// SSRF payloads | `pip install gopherus` |\n| [interactsh](https://github.com/projectdiscovery/interactsh) | OOB interaction server | `go install github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest` |\n\n---\n\n## Authentication\n\n| Tool | Purpose | Install |\n|------|---------|--------|\n| [jwt_tool](https://github.com/ticarpi/jwt_tool) | JWT testing & exploitation | `pip install jwt_tool` |\n| [hashcat](https://hashcat.net) | Password hash cracking | `apt install hashcat` |\n| [hydra](https://github.com/vanhauser-thc/thc-hydra) | Online brute-forcing | `apt install hydra` |\n\n---\n\n## HTTP Protocol\n\n| Tool | Purpose | Install |\n|------|---------|--------|\n| [smuggler](https://github.com/defparam/smuggler) | HTTP request smuggling | `pip install smuggler` |\n| HTTP Request Smuggler (Burp ext.) | Smuggling via Burp | Burp Suite BApp Store |\n| param-miner (Burp ext.) | Cache poisoning parameter discovery | Burp Suite BApp Store |\n\n---\n\n## Deserialization\n\n| Tool | Purpose | Install |\n|------|---------|--------|\n| [ysoserial](https://github.com/frohoff/ysoserial) | Java deserialization gadget chain generator | Download JAR |\n| [PHPGGC](https://github.com/ambionics/phpggc) | PHP gadget chain generator | `git clone` |\n\n---\n\n## Wordlists & Payloads\n\n| Resource | Description |\n|---------|-------------|\n| [SecLists](https://github.com/danielmiessler/SecLists) | The largest collection of security testing lists |\n| [PayloadsAllTheThings](https://github.com/swisskyrepo/PayloadsAllTheThings) | Payloads for every attack type |\n| [FuzzDB](https://github.com/fuzzdb-project/fuzzdb) | Attack patterns and payloads |";
+
+PAGES.labs = "# Lab Environments\n\n> Practice environments for every attack category in this database. No theory without practice.\n\n---\n\n## Online Platforms (No Setup Required)\n\n| Platform | Best For | URL | Cost |\n|---------|---------|-----|------|\n| **PortSwigger Web Security Academy** | Web attacks -- all categories | [portswigger.net/web-security](https://portswigger.net/web-security) | Free |\n| **HackTheBox** | Real-world machines, CTF-style | [hackthebox.com](https://hackthebox.com) | Free / Pro |\n| **TryHackMe** | Guided learning paths, beginner-friendly | [tryhackme.com](https://tryhackme.com) | Free / Pro |\n| **PentesterLab** | Web-specific, badge-based | [pentesterlab.com](https://pentesterlab.com) | Free / Pro |\n| **OWASP WebGoat** | Deliberately insecure -- all OWASP top 10 | [webgoat.github.io](https://webgoat.github.io) | Free |\n\n---\n\n## Self-Hosted Vulnerable Apps\n\n| App | Covers | Setup |\n|-----|--------|-------|\n| **DVWA** | SQLi, XSS, CSRF, File inclusion, Command injection | `docker run -p 80:80 vulnerables/web-dvwa` |\n| **bWAPP** | 100+ vulnerabilities across all categories | `docker run -p 80:80 raesene/bwapp` |\n| **WebGoat** | OWASP top 10, injection, auth, access control | `docker run -p 8080:8080 webgoat/goat-and-wolf` |\n| **Mutillidae** | OWASP top 10, injection-heavy | `docker run -p 80:80 citizenstig/nowasp` |\n| **NodeGoat** | Node.js-specific OWASP top 10 | `git clone github.com/OWASP/NodeGoat` |\n\n---\n\n## Attack-Specific Labs\n\n### SQL Injection\n- [PortSwigger SQLi Labs](https://portswigger.net/web-security/sql-injection) -- 18 labs from basic to blind to OOB\n- [SQLi-labs](https://github.com/Audi-1/sqli-labs) -- 75 levels, MySQL-focused\n\n### SSTI\n- [PortSwigger SSTI Labs](https://portswigger.net/web-security/server-side-template-injection)\n- [TryHackMe -- SSTI](https://tryhackme.com/room/learnssti)\n\n### SSRF\n- [PortSwigger SSRF Labs](https://portswigger.net/web-security/ssrf)\n\n### XSS\n- [PortSwigger XSS Labs](https://portswigger.net/web-security/cross-site-scripting) -- 30+ labs\n- [XSS Game (Google)](https://xss-game.appspot.com)\n\n### HTTP Request Smuggling\n- [PortSwigger Request Smuggling Labs](https://portswigger.net/web-security/request-smuggling)\n\n### Deserialization\n- [PortSwigger Deserialization Labs](https://portswigger.net/web-security/deserialization)\n\n### OAuth / JWT\n- [PortSwigger OAuth Labs](https://portswigger.net/web-security/oauth)\n- [PortSwigger JWT Labs](https://portswigger.net/web-security/jwt)\n\n---\n\n## CTF Platforms\n\n| Platform | Style | URL |\n|---------|-------|-----|\n| CTFtime | Event tracker | [ctftime.org](https://ctftime.org) |\n| picoCTF | Educational | [picoctf.org](https://picoctf.org) |\n| pwn.college | Systematic | [pwn.college](https://pwn.college) |\n\n---\n\n## Bug Bounty Programs (Real-World Practice)\n\n| Program | Platform |\n|---------|----------|\n| HackerOne Public Programs | [hackerone.com](https://hackerone.com/bug-bounty-programs) |\n| Bugcrowd Public Programs | [bugcrowd.com/programs](https://bugcrowd.com/programs) |\n| Intigriti Public Programs | [intigriti.com](https://app.intigriti.com/programs) |\n\n> Always read program scope and rules before testing. Testing outside scope is illegal.";
+
+/* CAT-01 has full content */
+CATEGORIES[0].content = "# CAT-01: Injection Attacks\n\n> **Domain:** Web Application -- **Phase:** 1 -- **CAPEC Category:** Inject Unexpected Items\n\n---\n\n## Category Overview\n\nInjection attacks occur when untrusted, attacker-controlled data is sent to an interpreter -- a database engine, OS shell, LDAP server, template engine, XML parser, or any other component that evaluates input as code or a command. The interpreter cannot distinguish between the intended instruction and the injected content, executing both.\n\nThe fundamental precondition for all injection vulnerabilities is the same: **user-controlled data is concatenated into a query, command, or expression without sufficient sanitization, parameterization, or contextual escaping.** The interpreter is working as designed -- the vulnerability is in how the application constructs the input to that interpreter.\n\n**Why it persists:** Developer trust of user input remains pervasive in legacy codebases, ORMs create false confidence, and WAF bypass techniques continuously outpace signature-based defenses. Injection was #1 on the OWASP Top 10 for over a decade and remains in the top 5 in 2025.\n\n---\n\n## Attack Surface Map\n\n```mermaid\ngraph TD\n    USER[User / Attacker Input] --> FORMS[HTML Forms]\n    USER --> PARAMS[URL Parameters]\n    USER --> HEADERS[HTTP Headers]\n    USER --> COOKIES[Cookies]\n    USER --> JSON[JSON / XML Body]\n    USER --> WSOCK[WebSocket Messages]\n    FORMS & PARAMS & HEADERS & COOKIES & JSON & WSOCK --> APP[Web Application]\n    APP --> SQL[SQL Engine]\n    APP --> NOSQL[NoSQL Engine]\n    APP --> OS[Operating System Shell]\n    APP --> LDAP[LDAP Directory]\n    APP --> XPATH[XPath / XML Parser]\n    APP --> TMPL[Template Engine]\n    APP --> EL[Expression Language]\n    APP --> LLM[LLM / AI Model]\n    SQL --> |SQLi| SQLI[Data theft - Auth bypass - RCE]\n    NOSQL --> |NoSQLi| NOSQLI[Auth bypass - Data exfiltration]\n    OS --> |CMDi| CMDI[RCE - Reverse shell]\n    LDAP --> |LDAPi| LDAPI[Auth bypass - Directory enum]\n    XPATH --> |XPathi| XPATHI[Data extraction - Auth bypass]\n    TMPL --> |SSTI| SSTII[RCE - Config read]\n    EL --> |ELi| ELI[RCE via OGNL - Spring SpEL]\n    LLM --> |Prompt Inj| PROMPTI[Goal hijack - Data exfil]\n```\n\n---\n\n## Attack Types in This Category\n\n| ID | Attack Type | Key CWEs | Subtypes | Severity |\n|----|------------|---------|---------|----------|\n| T01 | SQL Injection | CWE-89 | 12 | CRITICAL |\n| T02 | NoSQL Injection | CWE-943 | 5 | CRITICAL |\n| T03 | OS Command Injection | CWE-78 | 5 | CRITICAL |\n| T04 | SSTI | CWE-94, CWE-1336 | 9 | CRITICAL |\n| T05 | LDAP Injection | CWE-90 | 4 | HIGH |\n| T06 | XPath Injection | CWE-643 | 3 | HIGH |\n| T07 | EL / OGNL Injection | CWE-917 | 5 | CRITICAL |\n| T08 | XML Injection | CWE-91 | 4 | HIGH |\n| T09 | CRLF Injection | CWE-93, CWE-113 | 4 | HIGH |\n| T10 | Code Injection | CWE-94, CWE-95 | 5 | CRITICAL |\n| T11 | ORM Injection | CWE-89 | 4 | HIGH |\n| T12 | JSON Injection | CWE-74 | 4 | MEDIUM |\n| T13 | HTML Injection | CWE-79, CWE-80 | 3 | MEDIUM |\n| T14 | SMTP Injection | CWE-93 | 4 | MEDIUM |\n| T15 | Prompt Injection | CWE-1427 | 6 | HIGH |\n\n---\n\n## Universal Injection Pattern\n\nAll injection attacks share the same structural vulnerability:\n\n```\nVULNERABLE:\nquery = \"SELECT * FROM users WHERE id = \" + userInput\nuserInput = \"1 OR 1=1--\"\nquery = \"SELECT * FROM users WHERE id = 1 OR 1=1--\"  <-- Logic altered\n\nSECURE:\nquery = \"SELECT * FROM users WHERE id = ?\"\nexecute(query, [userInput])\nuserInput is data, never code -- interpreter separation maintained\n```\n\n---\n\n## Detection Heuristics (All Injection Types)\n\n| Probe Type | Payload Pattern | Indicator |\n|-----------|----------------|----------|\n| Error-based | `'`, `\"`, `)`, `` ` `` | Interpreter error in response |\n| Boolean differential | `AND 1=1`, `AND 1=2` | Different response content |\n| Time-based | `SLEEP(5)`, `WAITFOR DELAY` | Delayed response |\n| Out-of-band | DNS/HTTP callback payloads | External request received |\n| Syntax probe | `{{7*7}}`, `${7*7}`, `<%= 7*7 %>` | `49` in response (SSTI/EL) |\n\n---\n\n## Injection by Interpreter\n\n<details>\n<summary><b>SQL -- Database Engines</b></summary>\n\n| Engine | Characteristic Syntax | Time Delay | Comment |\n|--------|----------------------|-----------|--------|\n| MySQL | `SLEEP(N)`, `-- -` | `SLEEP(5)` | `#` comment also works |\n| PostgreSQL | `pg_sleep(N)`, `--` | `pg_sleep(5)` | Stacked queries with `;` |\n| MSSQL | `WAITFOR DELAY`, `--` | `WAITFOR DELAY '0:0:5'` | `xp_cmdshell` for RCE |\n| Oracle | `dbms_pipe.receive_message` | `dbms_pipe.receive_message(('a'),5)` | No stacked queries |\n| SQLite | `randomblob(N)` | `randomblob(500000000)` | Limited OOB options |\n\n</details>\n\n<details>\n<summary><b>SSTI -- Template Engines by Language</b></summary>\n\n| Engine | Language | Probe | RCE Payload Pattern |\n|--------|----------|-------|-------------------|\n| Jinja2 | Python | `{{7*7}}` | `{{''.__class__.__mro__[1].__subclasses__()}}` |\n| Twig | PHP | `{{7*7}}` | `{{_self.env.registerUndefinedFilterCallback('exec')}}` |\n| Freemarker | Java | `${7*7}` | `<#assign ex=\"freemarker.template.utility.Execute\"?new()>` |\n| Velocity | Java | `#set($x=7*7)$x` | Reflection-based RCE |\n| Smarty | PHP | `{php}phpinfo();{/php}` | Direct PHP execution (legacy) |\n| ERB | Ruby | `<%= 7*7 %>` | `<%= system('id') %>` |\n\n</details>\n\n---\n\n## Prevention -- Universal Principles\n\n1. **Parameterized Queries / Prepared Statements** -- for all database interactions\n2. **Contextual Output Encoding** -- HTML, JS, URL, CSS context-aware escaping\n3. **Input Validation** -- allowlist approach for known-good values\n4. **Principle of Least Privilege** -- database accounts with minimal permissions\n5. **WAF as defense-in-depth** -- never as primary control\n6. **ORM safely** -- avoid raw query methods\n7. **Sandboxed template engines** -- no user-controlled template content\n\n---\n\n## References\n\n### Primary Standards\n- [OWASP -- Injection (A05:2025)](https://owasp.org/Top10/2025/A05_2025-Injection/)\n- [OWASP WSTG -- Testing for Injection](https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/)\n- [CWE-74: Improper Neutralization](https://cwe.mitre.org/data/definitions/74.html)\n- [CAPEC-152: Inject Unexpected Items](https://capec.mitre.org/data/definitions/152.html)\n\n### Deep Research\n- [PortSwigger -- SQL Injection](https://portswigger.net/web-security/sql-injection)\n- [PortSwigger -- SSTI](https://portswigger.net/research/server-side-template-injection)\n- [PayloadsAllTheThings](https://github.com/swisskyrepo/PayloadsAllTheThings)";
+
+
+/* ===== SHIELD.IO STRIPPING (FIX 2) ===== */
+function stripShields(md) {
+  md = md.replace(/!\[CRITICAL\]\(https:\/\/img\.shields\.io[^)]+\)/g, '<span class="badge-critical">CRITICAL</span>');
+  md = md.replace(/!\[HIGH\]\(https:\/\/img\.shields\.io[^)]+\)/g, '<span class="badge-high">HIGH</span>');
+  md = md.replace(/!\[MEDIUM\]\(https:\/\/img\.shields\.io[^)]+\)/g, '<span class="badge-medium">MEDIUM</span>');
+  md = md.replace(/!\[[^\]]*\]\(https:\/\/img\.shields\.io[^)]+\)/g, '');
+  md = md.replace(/<div align="center">\s*/g, '<div class="center-block">');
+  return md;
 }
 
-function buildSidebar() {
-  var container = document.getElementById("sidebarCategories");
-  var html = "";
-  for (var i = 0; i < GORGE.categories.length; i++) {
-    var cat = GORGE.categories[i];
-    var bc = "badge-" + cat.severity.toLowerCase();
-    html += "<div class=\"sidebar-cat-group\" data-severity=\"" + cat.severity + "\">";
-    html += "<div class=\"sidebar-item\" data-slug=\"" + cat.slug + "\" onclick=\"handleSidebarClick('" + cat.slug + "',this)\">";
-    html += "<span class=\"sidebar-arrow\" id=\"arrow-" + cat.slug + "\">&#9654;</span>";
-    html += "<span class=\"sidebar-id\">" + cat.id + "</span>";
-    html += "<span class=\"sidebar-name\">" + cat.name + "</span>";
-    html += "<span class=\"sidebar-badge " + bc + "\">" + cat.severity + "</span>";
-    html += "</div>";
-    html += "<div class=\"sidebar-sub-items\" id=\"sub-" + cat.slug + "\">";
-    for (var j = 0; j < cat.types.length; j++) {
-      html += "<div class=\"sidebar-sub-item\">" + escapeHtml(cat.types[j]) + "</div>";
-    }
-    html += "</div></div>";
-  }
-  container.innerHTML = html;
+/* ===== AI METADATA STRIPPING (FIX 9) ===== */
+function stripAIMetadata(md) {
+  return md.replace(/<details>\s*<summary><code>AI Agent Metadata \(JSON\)<\/code><\/summary>[\s\S]*?<\/details>/g, '');
 }
 
-function handleSidebarClick(slug, el) {
-  var sub = document.getElementById("sub-" + slug);
-  var arrow = document.getElementById("arrow-" + slug);
-  if (sub.classList.contains("expanded")) {
-    sub.classList.remove("expanded");
-    arrow.classList.remove("expanded");
+/* ===== DETAILS/SUMMARY STYLING (FIX 10) ===== */
+function processCollapsibles(html) {
+  html = html.replace(/<details>/g, '<details class="gorge-collapsible">');
+  html = html.replace(/<summary>/g, '<summary class="gorge-collapsible-trigger">');
+  return html;
+}
+
+/* ===== MARKED.JS CUSTOM RENDERER (FIX 4) ===== */
+var renderer = new marked.Renderer();
+renderer.code = function(obj) {
+  var code, lang;
+  if (typeof obj === 'object' && obj !== null) {
+    code = obj.text || '';
+    lang = obj.lang || '';
   } else {
-    sub.classList.add("expanded");
-    arrow.classList.add("expanded");
+    code = obj || '';
+    lang = arguments[1] || '';
   }
-  navigateTo(slug);
-}
-
-function filterSeverity(severity, btn) {
-  currentFilter = severity;
-  var btns = document.querySelectorAll(".filter-btn");
-  for (var i = 0; i < btns.length; i++) btns[i].classList.remove("active");
-  btn.classList.add("active");
-  var groups = document.querySelectorAll(".sidebar-cat-group");
-  for (var i = 0; i < groups.length; i++) {
-    groups[i].style.display = (severity === "all" || groups[i].getAttribute("data-severity") === severity) ? "block" : "none";
+  if (lang === 'mermaid') {
+    return '<div class="mermaid">' + escapeHtml(code) + '</div>';
   }
-  if (currentPage === "home") renderHomePage();
+  var id = 'c' + Math.random().toString(36).substr(2,8);
+  var hl;
+  try { hl = hljs.highlightAuto(code).value; } catch(e) { hl = escapeHtml(code); }
+  return '<div class="code-block"><div class="code-header"><span class="code-lang">'+(lang||'text')+'</span><button class="copy-btn" onclick="copyCode(\''+id+'\')">copy</button></div><pre id="'+id+'"><code class="hljs">'+hl+'</code></pre></div>';
+};
+renderer.codespan = function(obj) {
+  var code = (typeof obj === 'object' && obj !== null) ? (obj.text || '') : (obj || '');
+  return '<code class="inline-code">' + escapeHtml(code) + '</code>';
+};
+renderer.table = function(obj) {
+  var header, body;
+  if (typeof obj === 'object' && obj !== null && obj.header !== undefined) {
+    header = obj.header || '';
+    body = obj.body || '';
+  } else {
+    header = obj || '';
+    body = arguments[1] || '';
+  }
+  return '<div class="table-wrap"><table class="gorge-table"><thead>'+header+'</thead><tbody>'+body+'</tbody></table></div>';
+};
+renderer.link = function(obj) {
+  var href, title, text;
+  if (typeof obj === 'object' && obj !== null && obj.href !== undefined) {
+    href = obj.href || '';
+    title = obj.title || '';
+    text = obj.text || '';
+  } else {
+    href = obj || '';
+    title = arguments[1] || '';
+    text = arguments[2] || '';
+  }
+  if (href && href.startsWith('http')) return '<a href="'+href+'" target="_blank" rel="noopener">'+text+'</a>';
+  return '<a href="'+href+'">'+text+'</a>';
+};
+renderer.blockquote = function(obj) {
+  var q = (typeof obj === 'object' && obj !== null && obj.text !== undefined) ? obj.text : (obj || '');
+  return '<blockquote class="gorge-callout">'+q+'</blockquote>';
+};
+marked.use({ renderer: renderer });
+
+
+/* ===== MERMAID (FIX 6) ===== */
+mermaid.initialize({
+  startOnLoad: false,
+  theme: 'dark',
+  themeVariables: {
+    background: '#0d0d0d',
+    mainBkg: '#1a1a1a',
+    nodeBorder: '#cc0000',
+    primaryColor: '#1a1a1a',
+    primaryTextColor: '#ccc',
+    primaryBorderColor: '#cc0000',
+    lineColor: '#cc0000',
+    fontFamily: 'JetBrains Mono, monospace',
+    fontSize: '13px'
+  }
+});
+
+function renderMermaid() {
+  var els = document.querySelectorAll('.mermaid');
+  if (els.length > 0) {
+    try {
+      mermaid.run({ nodes: els });
+    } catch(e) {
+      console.warn('Mermaid render error:', e);
+    }
+  }
 }
 
-function navigateTo(page) {
-  window.location.hash = "#" + page;
+
+/* ===== COPY BUTTON (FIX 5) ===== */
+window.copyCode = function(id) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  navigator.clipboard.writeText(el.innerText).then(function() {
+    var btn = el.closest('.code-block').querySelector('.copy-btn');
+    btn.textContent = 'copied!';
+    btn.classList.add('copied');
+    setTimeout(function() { btn.textContent = 'copy'; btn.classList.remove('copied'); }, 2000);
+  });
+};
+
+
+/* ===== UTILITY ===== */
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function initRouter() {
-  window.addEventListener("hashchange", handleRoute);
+
+/* ===== NAVIGATION (FIX 1 -- CRITICAL) ===== */
+window.navigateTo = function(page) {
+  window.location.hash = page;
+};
+
+window.addEventListener('hashchange', function() {
   handleRoute();
-}
+});
 
+window.addEventListener('DOMContentLoaded', function() {
+  buildSidebar();
+  initSearch();
+  handleRoute();
+});
+
+
+/* ===== ROUTING ===== */
 function handleRoute() {
-  var hash = window.location.hash.replace("#", "") || "home";
+  var hash = window.location.hash.replace('#', '') || 'home';
   currentPage = hash;
   updateSidebarActive(hash);
   renderPage(hash);
   window.scrollTo(0, 0);
-  var sidebar = document.getElementById("sidebar");
-  if (sidebar.classList.contains("open")) sidebar.classList.remove("open");
-}
-
-function updateSidebarActive(hash) {
-  var items = document.querySelectorAll(".sidebar-item");
-  for (var i = 0; i < items.length; i++) {
-    items[i].classList.remove("active");
-    if (items[i].getAttribute("data-slug") === hash) items[i].classList.add("active");
-  }
-  var metas = document.querySelectorAll(".sidebar-meta-item");
-  for (var i = 0; i < metas.length; i++) {
-    metas[i].classList.remove("active");
-    var t = metas[i].textContent.trim().toLowerCase();
-    if ((t === "tools index" && hash === "tools") || (t === "lab environments" && hash === "labs") ||
-        (t === "taxonomy" && hash === "taxonomy") || (t === "about" && hash === "about") ||
-        (t === "changelog" && hash === "changelog")) {
-      metas[i].classList.add("active");
-    }
-  }
+  var sidebar = document.getElementById('sidebar');
+  if (sidebar && sidebar.classList.contains('open')) sidebar.classList.remove('open');
 }
 
 function renderPage(hash) {
-  if (hash === "home") { document.title = "GORGE | Vulnerability Database"; renderHomePage(); }
-  else if (hash === "about") { document.title = "GORGE | About"; renderMarkdownPage(GORGE.pages.about); }
-  else if (hash === "taxonomy") { document.title = "GORGE | Taxonomy"; renderMarkdownPage(GORGE.pages.taxonomy); }
-  else if (hash === "changelog") { document.title = "GORGE | Changelog"; renderMarkdownPage(GORGE.pages.changelog); }
-  else if (hash === "tools") { document.title = "GORGE | Tools Index"; renderMarkdownPage(GORGE.pages.tools); }
-  else if (hash === "labs") { document.title = "GORGE | Lab Environments"; renderMarkdownPage(GORGE.pages.labs); }
+  if (hash === 'home') { document.title = 'GORGE | Vulnerability Database'; renderHomePage(); }
+  else if (hash === 'about') { document.title = 'GORGE | About'; renderMarkdownPage(PAGES.about); }
+  else if (hash === 'taxonomy') { document.title = 'GORGE | Taxonomy'; renderMarkdownPage(PAGES.taxonomy); }
+  else if (hash === 'changelog') { document.title = 'GORGE | Changelog'; renderMarkdownPage(PAGES.changelog); }
+  else if (hash === 'tools') { document.title = 'GORGE | Tools Index'; renderMarkdownPage(PAGES.tools); }
+  else if (hash === 'labs') { document.title = 'GORGE | Lab Environments'; renderMarkdownPage(PAGES.labs); }
   else {
     var cat = findCategory(hash);
-    if (cat) { document.title = "GORGE | " + cat.id + " " + cat.name; renderCategoryPage(cat); }
+    if (cat) { document.title = 'GORGE | ' + cat.id + ' ' + cat.name; renderCategoryPage(cat); }
     else {
-      document.title = "GORGE | Not Found";
-      document.getElementById("mainContent").innerHTML = '<div class="breadcrumb"><a href="#home">Home</a></div><h1 style="color:var(--text-muted);margin-top:40px;">Page not found</h1>';
+      document.title = 'GORGE | Not Found';
+      document.getElementById('mainContent').innerHTML = '<div class="breadcrumb"><a href="#home" onclick="navigateTo(\'home\');return false;">Home</a></div><h1 style="color:var(--text-muted);margin-top:40px;">Page not found</h1>';
     }
   }
 }
 
 function findCategory(slug) {
-  for (var i = 0; i < GORGE.categories.length; i++) {
-    if (GORGE.categories[i].slug === slug) return GORGE.categories[i];
+  for (var i = 0; i < CATEGORIES.length; i++) {
+    if (CATEGORIES[i].slug === slug) return CATEGORIES[i];
   }
   return null;
 }
 
-function renderHomePage() {
-  var main = document.getElementById("mainContent");
-  var h = "";
-  h += "<div class=\"stats-row\">";
-  h += "<div class=\"stat-card\"><div class=\"stat-number\">22</div><div class=\"stat-label\">Categories</div></div>";
-  h += "<div class=\"stat-card\"><div class=\"stat-number\">133</div><div class=\"stat-label\">Attack Types</div></div>";
-  h += "<div class=\"stat-card\"><div class=\"stat-number\">665+</div><div class=\"stat-label\">Subtypes</div></div>";
-  h += "<div class=\"stat-card\"><div class=\"stat-number\">WEB</div><div class=\"stat-label\">APP</div></div>";
-  h += "</div>";
-  var vc = 0;
-  for (var i = 0; i < GORGE.categories.length; i++) {
-    if (currentFilter === "all" || GORGE.categories[i].severity === currentFilter) vc++;
-  }
-  h += "<div class=\"filter-row\">";
-  h += "<button class=\"filter-btn" + (currentFilter === "all" ? " active" : "") + "\" onclick=\"filterSeverity('all',this)\">All</button>";
-  h += "<button class=\"filter-btn" + (currentFilter === "CRITICAL" ? " active" : "") + "\" onclick=\"filterSeverity('CRITICAL',this)\">Critical</button>";
-  h += "<button class=\"filter-btn" + (currentFilter === "HIGH" ? " active" : "") + "\" onclick=\"filterSeverity('HIGH',this)\">High</button>";
-  h += "<button class=\"filter-btn" + (currentFilter === "MEDIUM" ? " active" : "") + "\" onclick=\"filterSeverity('MEDIUM',this)\">Medium</button>";
-  h += "<span class=\"filter-count\">Showing " + vc + " of 22 categories</span>";
-  h += "</div>";
-  for (var i = 0; i < GORGE.categories.length; i++) {
-    var cat = GORGE.categories[i];
-    if (currentFilter !== "all" && cat.severity !== currentFilter) continue;
-    var bc = "badge-" + cat.severity.toLowerCase();
-    h += "<div class=\"category-card\">";
-    h += "<div class=\"category-card-header\" onclick=\"toggleCategoryCard('" + cat.slug + "')\">";
-    h += "<span class=\"cat-card-id\">" + cat.id + "</span>";
-    h += "<span class=\"cat-card-name\">" + cat.name + "</span>";
-    h += "<span class=\"" + bc + "\">" + cat.severity + "</span>";
-    h += "<span class=\"cat-card-types\">" + cat.typeCount + " types</span>";
-    h += "<span class=\"cat-card-arrow\" id=\"card-arrow-" + cat.slug + "\">&#9654;</span>";
-    h += "</div>";
-    h += "<div class=\"category-card-body\" id=\"card-body-" + cat.slug + "\">";
-    h += "<ul class=\"cat-subtype-list\">";
+
+/* ===== SIDEBAR ===== */
+function buildSidebar() {
+  var container = document.getElementById('sidebarCategories');
+  var html = '';
+  for (var i = 0; i < CATEGORIES.length; i++) {
+    var cat = CATEGORIES[i];
+    var bc = 'badge-' + cat.severity.toLowerCase();
+    html += '<div class="sidebar-cat-group" data-severity="' + cat.severity + '">';
+    html += '<div class="sidebar-item" data-slug="' + cat.slug + '" onclick="handleSidebarClick(\'' + cat.slug + '\',this)">';
+    html += '<span class="sidebar-arrow" id="arrow-' + cat.slug + '">&#9654;</span>';
+    html += '<span class="sidebar-id">' + cat.id + '</span>';
+    html += '<span class="sidebar-name">' + cat.name + '</span>';
+    html += '<span class="sidebar-badge ' + bc + '">' + cat.severity + '</span>';
+    html += '</div>';
+    html += '<div class="sidebar-sub-items" id="sub-' + cat.slug + '">';
     for (var j = 0; j < cat.types.length; j++) {
-      h += "<li class=\"cat-subtype-item\">" + escapeHtml(cat.types[j]) + "</li>";
+      html += '<div class="sidebar-sub-item">' + escapeHtml(cat.types[j]) + '</div>';
     }
-    h += "</ul>";
-    h += "<div style=\"margin-top:12px\"><a href=\"#" + cat.slug + "\" style=\"color:var(--red);font-size:12px;text-decoration:none;\">View full category &#8594;</a></div>";
-    h += "</div></div>";
+    html += '</div></div>';
+  }
+  container.innerHTML = html;
+}
+
+window.handleSidebarClick = function(slug, el) {
+  var sub = document.getElementById('sub-' + slug);
+  var arrow = document.getElementById('arrow-' + slug);
+  if (sub.classList.contains('expanded')) {
+    sub.classList.remove('expanded');
+    arrow.classList.remove('expanded');
+  } else {
+    sub.classList.add('expanded');
+    arrow.classList.add('expanded');
+  }
+  navigateTo(slug);
+};
+
+function updateSidebarActive(hash) {
+  var items = document.querySelectorAll('.sidebar-item');
+  for (var i = 0; i < items.length; i++) {
+    items[i].classList.remove('active');
+    if (items[i].getAttribute('data-slug') === hash) items[i].classList.add('active');
+  }
+  var metas = document.querySelectorAll('.sidebar-meta-item');
+  for (var i = 0; i < metas.length; i++) {
+    metas[i].classList.remove('active');
+    var t = metas[i].textContent.trim().toLowerCase();
+    if ((t === 'tools index' && hash === 'tools') || (t === 'lab environments' && hash === 'labs') ||
+        (t === 'taxonomy' && hash === 'taxonomy') || (t === 'about' && hash === 'about') ||
+        (t === 'changelog' && hash === 'changelog')) {
+      metas[i].classList.add('active');
+    }
+  }
+}
+
+window.filterSeverity = function(severity, btn) {
+  currentFilter = severity;
+  var btns = document.querySelectorAll('.sidebar-filter-row .filter-btn');
+  for (var i = 0; i < btns.length; i++) btns[i].classList.remove('active');
+  btn.classList.add('active');
+  var groups = document.querySelectorAll('.sidebar-cat-group');
+  for (var i = 0; i < groups.length; i++) {
+    groups[i].style.display = (severity === 'all' || groups[i].getAttribute('data-severity') === severity) ? 'block' : 'none';
+  }
+  if (currentPage === 'home') renderHomePage();
+};
+
+window.toggleSidebar = function() {
+  document.getElementById('sidebar').classList.toggle('open');
+};
+
+
+/* ===== HOME PAGE ===== */
+function renderHomePage() {
+  var main = document.getElementById('mainContent');
+  var h = '';
+  h += '<div class="stats-row">';
+  h += '<div class="stat-card"><div class="stat-number">22</div><div class="stat-label">Categories</div></div>';
+  h += '<div class="stat-card"><div class="stat-number">133</div><div class="stat-label">Attack Types</div></div>';
+  h += '<div class="stat-card"><div class="stat-number">665+</div><div class="stat-label">Subtypes</div></div>';
+  h += '<div class="stat-card"><div class="stat-number">WEB</div><div class="stat-label">Application</div></div>';
+  h += '</div>';
+
+  var vc = 0;
+  for (var i = 0; i < CATEGORIES.length; i++) {
+    if (currentFilter === 'all' || CATEGORIES[i].severity === currentFilter) vc++;
+  }
+  h += '<div class="home-filter-row">';
+  h += '<button class="filter-btn' + (currentFilter === 'all' ? ' active' : '') + '" onclick="filterSeverity(\'all\',this)">All</button>';
+  h += '<button class="filter-btn' + (currentFilter === 'CRITICAL' ? ' active' : '') + '" onclick="filterSeverity(\'CRITICAL\',this)">Critical</button>';
+  h += '<button class="filter-btn' + (currentFilter === 'HIGH' ? ' active' : '') + '" onclick="filterSeverity(\'HIGH\',this)">High</button>';
+  h += '<button class="filter-btn' + (currentFilter === 'MEDIUM' ? ' active' : '') + '" onclick="filterSeverity(\'MEDIUM\',this)">Medium</button>';
+  h += '<span class="filter-count">Showing ' + vc + ' of 22 categories</span>';
+  h += '</div>';
+
+  for (var i = 0; i < CATEGORIES.length; i++) {
+    var cat = CATEGORIES[i];
+    if (currentFilter !== 'all' && cat.severity !== currentFilter) continue;
+    var bc = 'badge-' + cat.severity.toLowerCase();
+    h += '<div class="category-card">';
+    h += '<div class="category-card-header">';
+    h += '<span class="cat-card-id">' + cat.id + '</span>';
+    h += '<span class="cat-card-name">' + cat.name + '</span>';
+    h += '<span class="' + bc + '">' + cat.severity + '</span>';
+    h += '<span class="cat-card-types">' + cat.typeCount + ' types</span>';
+    h += '<button class="cat-card-nav" onclick="event.stopPropagation();navigateTo(\'' + cat.slug + '\')">View</button>';
+    h += '<span class="cat-card-arrow" id="card-arrow-' + cat.slug + '" onclick="event.stopPropagation();toggleCategoryCard(\'' + cat.slug + '\')">&#9654;</span>';
+    h += '</div>';
+    h += '<div class="category-card-body" id="card-body-' + cat.slug + '">';
+    h += '<ul class="cat-subtype-list">';
+    for (var j = 0; j < cat.types.length; j++) {
+      h += '<li class="cat-subtype-item">' + escapeHtml(cat.types[j]) + '</li>';
+    }
+    h += '</ul>';
+    h += '<div style="margin-top:12px"><a href="#' + cat.slug + '" onclick="navigateTo(\'' + cat.slug + '\');return false;" style="color:var(--red);font-size:12px;text-decoration:none;">View full category &#8594;</a></div>';
+    h += '</div></div>';
   }
   main.innerHTML = h;
 }
 
-function toggleCategoryCard(slug) {
-  var body = document.getElementById("card-body-" + slug);
-  var arrow = document.getElementById("card-arrow-" + slug);
-  if (body.classList.contains("expanded")) {
-    body.classList.remove("expanded");
-    arrow.classList.remove("expanded");
+window.toggleCategoryCard = function(slug) {
+  var body = document.getElementById('card-body-' + slug);
+  var arrow = document.getElementById('card-arrow-' + slug);
+  if (body.classList.contains('expanded')) {
+    body.classList.remove('expanded');
+    arrow.classList.remove('expanded');
   } else {
-    body.classList.add("expanded");
-    arrow.classList.add("expanded");
+    body.classList.add('expanded');
+    arrow.classList.add('expanded');
   }
-}
+};
 
+
+/* ===== CATEGORY PAGE (FIX 3 -- stub handling) ===== */
 function renderCategoryPage(cat) {
-  var main = document.getElementById("mainContent");
-  var bc = "badge-" + cat.severity.toLowerCase();
-  var h = "";
-  h += "<div class=\"breadcrumb\"><a href=\"#home\">Home</a> &gt; <span>" + cat.id + "</span> &gt; <span>" + cat.name + "</span></div>";
-  h += "<div class=\"page-header-id\">" + cat.id + "</div>";
-  h += "<h1 class=\"page-header-title\">" + cat.name + "</h1>";
-  h += "<div class=\"page-header-badges\">";
-  h += "<span class=\"" + bc + "\">" + cat.severity + "</span>";
-  h += "<span class=\"badge-high\" style=\"background:var(--border);color:var(--text-muted)\">" + cat.typeCount + " types</span>";
-  h += "</div>";
-  h += "<div class=\"md-content\" id=\"mdContent\">" + renderMarkdown(cat.content) + "</div>";
+  var main = document.getElementById('mainContent');
+  var bc = 'badge-' + cat.severity.toLowerCase();
+  var h = '';
+  h += '<div class="breadcrumb"><a href="#home" onclick="navigateTo(\'home\');return false;">Home</a> &gt; <span>' + cat.id + '</span> &gt; <span>' + cat.name + '</span></div>';
+  h += '<div class="page-header-id">' + cat.id + '</div>';
+  h += '<h1 class="page-header-title">' + cat.name + '</h1>';
+  h += '<div class="page-header-badges">';
+  h += '<span class="' + bc + '">' + cat.severity + '</span>';
+  h += '<span class="badge-high" style="background:var(--border);color:var(--text-muted)">' + cat.typeCount + ' types</span>';
+  h += '</div>';
+
+  if (cat.content) {
+    /* Full content category (CAT-01) */
+    h += '<div class="md-content" id="mdContent">' + renderMarkdown(cat.content) + '</div>';
+  } else {
+    /* Stub category (FIX 3) */
+    h += '<div class="research-banner"><strong>Full research in progress.</strong> The taxonomy and attack type structure are confirmed. Full content -- techniques, payloads, tools, and references -- will be added in sequence.</div>';
+    h += '<h2 style="font-size:15px;color:var(--text);margin:24px 0 12px;">Attack Types (Confirmed Taxonomy)</h2>';
+    h += '<table class="type-table">';
+    h += '<tr><th>#</th><th>Attack Type</th></tr>';
+    for (var j = 0; j < cat.types.length; j++) {
+      h += '<tr><td style="color:var(--text-dim);width:40px;">' + (j+1) + '</td><td>' + escapeHtml(cat.types[j]) + '</td></tr>';
+    }
+    h += '</table>';
+    h += '<p style="font-size:12px;color:var(--text-dim);margin-top:20px;">See the <a href="#taxonomy" onclick="navigateTo(\'taxonomy\');return false;" style="color:var(--red);">Taxonomy</a> page for full subtype enumeration. See the <a href="#changelog" onclick="navigateTo(\'changelog\');return false;" style="color:var(--red);">Changelog</a> for research roadmap.</p>';
+  }
+  h += '<div style="margin-top:32px;padding-top:16px;border-top:1px solid var(--border);"><a href="#home" onclick="navigateTo(\'home\');return false;" style="color:var(--red);font-size:12px;">&#8592; Back to Home</a></div>';
   main.innerHTML = h;
   postRender();
 }
 
 function renderMarkdownPage(content) {
-  var main = document.getElementById("mainContent");
-  var h = "<div class=\"breadcrumb\"><a href=\"#home\">Home</a></div>";
-  h += "<div class=\"md-content\" id=\"mdContent\">" + renderMarkdown(content) + "</div>";
+  var main = document.getElementById('mainContent');
+  var h = '<div class="breadcrumb"><a href="#home" onclick="navigateTo(\'home\');return false;">Home</a></div>';
+  h += '<div class="md-content" id="mdContent">' + renderMarkdown(content) + '</div>';
   main.innerHTML = h;
   postRender();
 }
 
 function renderMarkdown(text) {
-  var processed = text.replace(/```mermaid\n([\s\S]*?)```/g, function(match, code) {
-    return "<div class=\"mermaid\">" + escapeHtml(code) + "</div>";
-  });
-  return marked.parse(processed);
-}
-
-function escapeHtml(str) {
-  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  text = stripAIMetadata(text);
+  text = stripShields(text);
+  var html = marked.parse(text);
+  html = processCollapsibles(html);
+  return html;
 }
 
 function postRender() {
-  var pres = document.querySelectorAll(".md-content pre");
-  for (var i = 0; i < pres.length; i++) {
-    if (pres[i].querySelector(".copy-btn")) continue;
-    var btn = document.createElement("button");
-    btn.className = "copy-btn";
-    btn.textContent = "copy";
-    (function(pre, b) {
-      b.onclick = function() {
-        var code = pre.querySelector("code");
-        var text = code ? code.textContent : pre.textContent;
-        navigator.clipboard.writeText(text).then(function() {
-          b.textContent = "copied";
-          setTimeout(function() { b.textContent = "copy"; }, 1500);
-        });
-      };
-    })(pres[i], btn);
-    pres[i].style.position = "relative";
-    pres[i].appendChild(btn);
-  }
-  var els = document.querySelectorAll(".mermaid");
-  if (els.length > 0) {
-    try { mermaid.run({nodes: els}); } catch(e) {}
-  }
+  setTimeout(function() {
+    renderMermaid();
+  }, 50);
 }
 
+
+/* ===== SEARCH ===== */
 function initSearch() {
-  var input = document.getElementById("searchInput");
+  var input = document.getElementById('searchInput');
   var timer = null;
-  input.addEventListener("keyup", function(e) {
-    if (e.key === "Escape") { input.value = ""; handleRoute(); return; }
+  input.addEventListener('keyup', function(e) {
+    if (e.key === 'Escape') { input.value = ''; handleRoute(); return; }
     clearTimeout(timer);
     timer = setTimeout(function() {
       var q = input.value.trim();
@@ -440,96 +673,96 @@ function initSearch() {
 function handleSearch(query) {
   var results = [];
   var lq = query.toLowerCase();
-  for (var i = 0; i < GORGE.categories.length; i++) {
-    var cat = GORGE.categories[i];
+  for (var i = 0; i < CATEGORIES.length; i++) {
+    var cat = CATEGORIES[i];
     var cm = cat.name.toLowerCase().indexOf(lq) !== -1 || cat.id.toLowerCase().indexOf(lq) !== -1;
-    if (cm) results.push({type: "category", cat: cat, match: cat.name});
+    if (cm) results.push({type:'category', cat:cat, match:cat.name});
     for (var j = 0; j < cat.types.length; j++) {
       if (cat.types[j].toLowerCase().indexOf(lq) !== -1) {
-        results.push({type: "atype", cat: cat, match: cat.types[j]});
+        results.push({type:'atype', cat:cat, match:cat.types[j]});
       }
     }
-    if (cat.content.toLowerCase().indexOf(lq) !== -1 && !cm) {
+    if (cat.content && cat.content.toLowerCase().indexOf(lq) !== -1 && !cm) {
       var idx = cat.content.toLowerCase().indexOf(lq);
       var s = Math.max(0, idx - 40);
       var e = Math.min(cat.content.length, idx + query.length + 40);
-      var snip = (s > 0 ? "..." : "") + cat.content.substring(s, e) + (e < cat.content.length ? "..." : "");
-      results.push({type: "content", cat: cat, match: cat.name, snippet: snip});
+      var snip = (s > 0 ? '...' : '') + cat.content.substring(s, e) + (e < cat.content.length ? '...' : '');
+      results.push({type:'content', cat:cat, match:cat.name, snippet:snip});
     }
   }
-  var pks = ["home","about","taxonomy","changelog","tools","labs"];
-  var pns = {home:"Home",about:"About",taxonomy:"Taxonomy",changelog:"Changelog",tools:"Tools Index",labs:"Lab Environments"};
+  var pks = ['home','about','taxonomy','changelog','tools','labs'];
+  var pns = {home:'Home',about:'About',taxonomy:'Taxonomy',changelog:'Changelog',tools:'Tools Index',labs:'Lab Environments'};
   for (var k = 0; k < pks.length; k++) {
     var key = pks[k];
-    var pc = GORGE.pages[key];
+    var pc = PAGES[key] || '';
     if (pc.toLowerCase().indexOf(lq) !== -1) {
       var idx = pc.toLowerCase().indexOf(lq);
       var s = Math.max(0, idx - 40);
       var e = Math.min(pc.length, idx + query.length + 40);
-      var snip = (s > 0 ? "..." : "") + pc.substring(s, e) + (e < pc.length ? "..." : "");
-      results.push({type: "page", page: key, match: pns[key], snippet: snip});
+      var snip = (s > 0 ? '...' : '') + pc.substring(s, e) + (e < pc.length ? '...' : '');
+      results.push({type:'page', page:key, match:pns[key], snippet:snip});
     }
   }
   renderSearchResults(query, results);
 }
 
 function renderSearchResults(query, results) {
-  var main = document.getElementById("mainContent");
-  document.title = "GORGE | Search: " + query;
-  var h = "<div class=\"search-header\">" + results.length + " result" + (results.length !== 1 ? "s" : "") + " for \"<mark>" + escapeHtml(query) + "</mark>\"</div>";
+  var main = document.getElementById('mainContent');
+  document.title = 'GORGE | Search: ' + query;
+  var h = '<div class="search-header">' + results.length + ' result' + (results.length !== 1 ? 's' : '') + ' for "<mark>' + escapeHtml(query) + '</mark>"</div>';
   if (results.length === 0) {
-    h += "<p style=\"color:var(--text-muted);margin-top:20px\">No matches found. Try a different search term.</p>";
+    h += '<p style="color:var(--text-muted);margin-top:20px">No matches found. Try a different search term.</p>';
     main.innerHTML = h;
     return;
   }
   var cats = [], types = [], conts = [], pages = [];
   for (var i = 0; i < results.length; i++) {
     var r = results[i];
-    if (r.type === "category") cats.push(r);
-    else if (r.type === "atype") types.push(r);
-    else if (r.type === "content") conts.push(r);
-    else if (r.type === "page") pages.push(r);
+    if (r.type === 'category') cats.push(r);
+    else if (r.type === 'atype') types.push(r);
+    else if (r.type === 'content') conts.push(r);
+    else if (r.type === 'page') pages.push(r);
   }
   if (cats.length > 0) {
-    h += "<div class=\"search-result-group\"><div class=\"search-result-group-title\">Categories</div>";
+    h += '<div class="search-result-group"><div class="search-result-group-title">Categories</div>';
     for (var i = 0; i < cats.length; i++) {
       var r = cats[i];
-      var bc = "badge-" + r.cat.severity.toLowerCase();
-      h += "<div class=\"search-result\" onclick=\"navigateTo('" + r.cat.slug + "')\">";
-      h += "<div class=\"search-result-name\">" + highlightMatch(r.cat.name, query) + " <span class=\"" + bc + "\">" + r.cat.severity + "</span></div>";
-      h += "<div class=\"search-result-path\">" + r.cat.id + " &middot; " + r.cat.typeCount + " types</div></div>";
+      var bc = 'badge-' + r.cat.severity.toLowerCase();
+      h += '<div class="search-result" onclick="navigateTo(\'' + r.cat.slug + '\')">';
+      h += '<div class="search-result-name">' + highlightMatch(r.cat.name, query) + ' <span class="' + bc + '">' + r.cat.severity + '</span></div>';
+      h += '<div class="search-result-path">' + r.cat.id + ' &middot; ' + r.cat.typeCount + ' types</div></div>';
     }
-    h += "</div>";
+    h += '</div>';
   }
   if (types.length > 0) {
-    h += "<div class=\"search-result-group\"><div class=\"search-result-group-title\">Attack Types</div>";
+    h += '<div class="search-result-group"><div class="search-result-group-title">Attack Types</div>';
     for (var i = 0; i < types.length; i++) {
       var r = types[i];
-      h += "<div class=\"search-result\" onclick=\"navigateTo('" + r.cat.slug + "')\">";
-      h += "<div class=\"search-result-name\">" + highlightMatch(r.match, query) + "</div>";
-      h += "<div class=\"search-result-path\">" + r.cat.id + " &middot; " + r.cat.name + "</div></div>";
+      h += '<div class="search-result" onclick="navigateTo(\'' + r.cat.slug + '\')">';
+      h += '<div class="search-result-name">' + highlightMatch(r.match, query) + '</div>';
+      h += '<div class="search-result-path">' + r.cat.id + ' &middot; ' + r.cat.name + '</div></div>';
     }
-    h += "</div>";
+    h += '</div>';
   }
   if (conts.length > 0) {
-    h += "<div class=\"search-result-group\"><div class=\"search-result-group-title\">Content Matches</div>";
+    h += '<div class="search-result-group"><div class="search-result-group-title">Content Matches</div>';
     for (var i = 0; i < conts.length; i++) {
       var r = conts[i];
-      h += "<div class=\"search-result\" onclick=\"navigateTo('" + r.cat.slug + "')\">";
-      h += "<div class=\"search-result-name\">" + r.cat.name + "</div>";
-      h += "<div class=\"search-result-path\">" + highlightMatch(r.snippet, query) + "</div></div>";
+      h += '<div class="search-result" onclick="navigateTo(\'' + r.cat.slug + '\')">';
+      h += '<div class="search-result-name">' + r.cat.name + '</div>';
+      h += '<div class="search-result-path">' + highlightMatch(r.snippet, query) + '</div></div>';
     }
-    h += "</div>";
+    h += '</div>';
   }
   if (pages.length > 0) {
-    h += "<div class=\"search-result-group\"><div class=\"search-result-group-title\">Pages</div>";
+    h += '<div class="search-result-group"><div class="search-result-group-title">Pages</div>';
     for (var i = 0; i < pages.length; i++) {
       var r = pages[i];
-      h += "<div class=\"search-result\" onclick=\"navigateTo('" + r.page + "')\">";
-      h += "<div class=\"search-result-name\">" + highlightMatch(r.match, query) + "</div>";
-      h += "<div class=\"search-result-path\">" + highlightMatch(r.snippet, query) + "</div></div>";
+      h += '<div class="search-result" onclick="navigateTo(\'' + r.page + '\')">';
+      h += '<div class="search-result-name">' + highlightMatch(r.match, query) + '</div>';
+      h += '<div class="search-result-path">' + highlightMatch(r.snippet, query) + '</div></div>';
     }
-    h += "</div>";
+    h += '</div>';
   }
   main.innerHTML = h;
 }
@@ -537,19 +770,9 @@ function renderSearchResults(query, results) {
 function highlightMatch(text, query) {
   if (!query) return escapeHtml(text);
   var esc = escapeHtml(text);
-  var re = new RegExp("(" + escapeRegex(escapeHtml(query)) + ")", "gi");
-  return esc.replace(re, "<mark>$1</mark>");
+  var re = new RegExp('(' + escapeRegex(escapeHtml(query)) + ')', 'gi');
+  return esc.replace(re, '<mark>$1</mark>');
 }
-
-function escapeRegex(str) {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function toggleSidebar() {
-  document.getElementById("sidebar").classList.toggle("open");
-}
-
-initApp();
 
 })();
 </script>
