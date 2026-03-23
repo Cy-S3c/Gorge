@@ -34,10 +34,10 @@ a:hover{text-decoration:underline;}
 
 /* NAVBAR */
 #navbar{position:fixed;top:0;left:0;right:0;height:52px;background:var(--bg);border-bottom:1px solid var(--red);display:flex;align-items:center;padding:0 16px;z-index:999;}
-.nav-brand{font-size:16px;font-weight:700;color:var(--red);cursor:pointer;letter-spacing:3px;text-transform:uppercase;margin-right:auto;}
+.nav-brand{font-size:16px;font-weight:700;color:var(--red);cursor:pointer;letter-spacing:3px;text-transform:uppercase;white-space:nowrap;flex-shrink:0;}
 .nav-brand:hover{text-decoration:none;}
-#searchWrap{position:relative;margin-right:12px;}
-#searchInput{background:var(--input-bg);border:1px solid #2a2a2a;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:13px;padding:6px 10px 6px 28px;width:220px;outline:none;border-radius:4px;height:36px;}
+#searchWrap{position:relative;flex:1;margin:0 16px;}
+#searchInput{background:var(--input-bg);border:1px solid #2a2a2a;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:13px;padding:6px 10px 6px 28px;width:100%;outline:none;border-radius:4px;height:36px;}
 #searchInput:focus{border-color:var(--red);}
 #searchInput::placeholder{color:#444444;}
 .search-icon{position:absolute;left:8px;top:50%;transform:translateY(-50%);color:var(--text-dim);font-size:12px;pointer-events:none;}
@@ -59,8 +59,8 @@ a:hover{text-decoration:underline;}
 .sidebar-item.active{background:rgba(204,0,0,0.12);border-left:2px solid var(--red);}
 .sidebar-arrow{font-size:8px;color:var(--text-dim);transition:transform 0.15s;display:inline-block;width:12px;text-align:center;}
 .sidebar-arrow.expanded{transform:rotate(90deg);}
-.sidebar-id{color:var(--text-dim);font-size:10px;min-width:48px;}
-.sidebar-name{flex:1;color:var(--text);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.sidebar-id{color:var(--text-dim);font-size:10px;min-width:44px;flex-shrink:0;}
+.sidebar-name{flex:1;color:var(--text);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px;}
 .sidebar-badge{font-size:9px;padding:1px 5px;border-radius:2px;font-weight:600;letter-spacing:0.5px;}
 .badge-critical{background:var(--red);color:#fff;font-size:9px;padding:1px 5px;border-radius:2px;font-weight:600;letter-spacing:0.5px;}
 .badge-high{background:var(--high);color:#fff;font-size:9px;padding:1px 5px;border-radius:2px;font-weight:600;letter-spacing:0.5px;}
@@ -527,7 +527,7 @@ function renderHomePage() {
   h += '<div class="stat-card"><div class="stat-number">22</div><div class="stat-label">Categories</div></div>';
   h += '<div class="stat-card"><div class="stat-number">133</div><div class="stat-label">Attack Types</div></div>';
   h += '<div class="stat-card"><div class="stat-number">665+</div><div class="stat-label">Subtypes</div></div>';
-  h += '<div class="stat-card"><div class="stat-number">WEB</div><div class="stat-label">Application</div></div>';
+  h += '<div class="stat-card"><div class="stat-number" style="font-size:18px;padding-top:4px;">WEB APP</div><div class="stat-label">current scope</div></div>';
   h += '</div>';
 
   var vc = 0;
