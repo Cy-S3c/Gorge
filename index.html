@@ -176,6 +176,13 @@ a:hover{text-decoration:underline;}
 .search-result-path{font-size:11px;color:var(--text-dim);}
 .search-result-path mark{background:rgba(204,0,0,0.3);color:var(--text);padding:0 1px;}
 
+/* LAST UPDATED BANNER */
+.last-updated{display:flex;align-items:center;gap:8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:#555;padding:8px 0;margin-bottom:16px;border-bottom:1px solid #1a1a1a;}
+.last-updated-dot{width:6px;height:6px;border-radius:50%;background:#cc0000;flex-shrink:0;}
+.last-updated-label{color:#444;text-transform:uppercase;letter-spacing:0.5px;}
+.last-updated-date{color:#888;}
+.last-updated-version{color:#444;margin-left:auto;}
+
 /* MERMAID */
 .mermaid{background:#111;border:1px solid var(--border);padding:24px;margin:16px 0;text-align:center;overflow-x:auto;max-width:100%;}
 .mermaid svg{max-width:100%;height:auto;}
@@ -239,6 +246,50 @@ a:hover{text-decoration:underline;}
 <script>
 (function(){
 "use strict";
+
+/* ===== PAGE METADATA — Last Updated Tracking ===== */
+var PAGE_UPDATED = {
+  'home':                 {date: '2026-03-23', version: 'v0.1.0'},
+  'cat-01':               {date: '2026-03-24', version: 'v0.1.1'},
+  'cat-02':               {date: '2026-03-23', version: 'v0.1.0'},
+  'cat-03':               {date: '2026-03-23', version: 'v0.1.0'},
+  'cat-04':               {date: '2026-03-23', version: 'v0.1.0'},
+  'cat-05':               {date: '2026-03-23', version: 'v0.1.0'},
+  'cat-06':               {date: '2026-03-23', version: 'v0.1.0'},
+  'cat-07':               {date: '2026-03-23', version: 'v0.1.0'},
+  'cat-08':               {date: '2026-03-23', version: 'v0.1.0'},
+  'cat-09':               {date: '2026-03-23', version: 'v0.1.0'},
+  'cat-10':               {date: '2026-03-23', version: 'v0.1.0'},
+  'cat-11':               {date: '2026-03-23', version: 'v0.1.0'},
+  'cat-12':               {date: '2026-03-23', version: 'v0.1.0'},
+  'cat-13':               {date: '2026-03-23', version: 'v0.1.0'},
+  'cat-14':               {date: '2026-03-23', version: 'v0.1.0'},
+  'cat-15':               {date: '2026-03-23', version: 'v0.1.0'},
+  'cat-16':               {date: '2026-03-23', version: 'v0.1.0'},
+  'cat-17':               {date: '2026-03-23', version: 'v0.1.0'},
+  'cat-18':               {date: '2026-03-23', version: 'v0.1.0'},
+  'cat-19':               {date: '2026-03-23', version: 'v0.1.0'},
+  'cat-20':               {date: '2026-03-23', version: 'v0.1.0'},
+  'cat-21':               {date: '2026-03-23', version: 'v0.1.0'},
+  'cat-22':               {date: '2026-03-23', version: 'v0.1.0'},
+  'about':                {date: '2026-03-23', version: 'v0.1.0'},
+  'taxonomy':             {date: '2026-03-23', version: 'v0.1.0'},
+  'changelog':            {date: '2026-03-24', version: 'v0.1.1'},
+  'tools':                {date: '2026-03-23', version: 'v0.1.0'},
+  'labs':                 {date: '2026-03-23', version: 'v0.1.0'},
+  'sqli-blind-boolean':   {date: '2026-03-24', version: 'v1.0.0'}
+};
+
+function renderLastUpdated(pageSlug) {
+  var meta = PAGE_UPDATED[pageSlug];
+  if (!meta) return '';
+  return '<div class="last-updated">' +
+    '<span class="last-updated-dot"></span>' +
+    '<span class="last-updated-label">Last updated</span>' +
+    '<span class="last-updated-date">' + meta.date + '</span>' +
+    '<span class="last-updated-version">' + meta.version + '</span>' +
+    '</div>';
+}
 
 var currentPage = "home";
 var currentFilter = "all";
@@ -2019,7 +2070,7 @@ window.toggleSidebar = function() {
 /* ===== HOME PAGE ===== */
 function renderHomePage() {
   var main = document.getElementById('mainContent');
-  var h = '';
+  var h = renderLastUpdated('home');
   h += '<div class="stats-row">';
   h += '<div class="stat-card"><div class="stat-number">22</div><div class="stat-label">Categories</div></div>';
   h += '<div class="stat-card"><div class="stat-number">133</div><div class="stat-label">Attack Types</div></div>';
@@ -2081,7 +2132,7 @@ window.toggleCategoryCard = function(slug) {
 function renderCategoryPage(cat) {
   var main = document.getElementById('mainContent');
   var bc = 'badge-' + cat.severity.toLowerCase();
-  var h = '';
+  var h = renderLastUpdated(cat.slug);
   h += '<div class="breadcrumb"><a href="#home" onclick="navigateTo(\'home\');return false;">Home</a> &gt; <span>' + cat.id + '</span> &gt; <span>' + cat.name + '</span></div>';
   h += '<div class="page-header-id">' + cat.id + '</div>';
   h += '<h1 class="page-header-title">' + cat.name + '</h1>';
@@ -2112,7 +2163,8 @@ function renderCategoryPage(cat) {
 
 function renderMarkdownPage(content) {
   var main = document.getElementById('mainContent');
-  var h = '<div class="breadcrumb"><a href="#home" onclick="navigateTo(\'home\');return false;">Home</a></div>';
+  var h = renderLastUpdated(currentPage);
+  h += '<div class="breadcrumb"><a href="#home" onclick="navigateTo(\'home\');return false;">Home</a></div>';
   h += '<div class="md-content" id="mdContent">' + renderMarkdown(content) + '</div>';
   main.innerHTML = h;
   postRender();
@@ -2120,7 +2172,8 @@ function renderMarkdownPage(content) {
 
 function renderSubtypePage(catId, typeName, subtypeName, content) {
   var main = document.getElementById('mainContent');
-  var h = '<div class="breadcrumb">';
+  var h = renderLastUpdated(currentPage);
+  h += '<div class="breadcrumb">';
   h += '<a href="#home" onclick="navigateTo(\'home\');return false;">Home</a> &gt; ';
   h += '<a href="#' + catId.toLowerCase().replace('-','') + '" onclick="navigateTo(\'' + catId.toLowerCase().replace(/-/g,'').replace('cat','cat-') + '\');return false;">' + catId + '</a> &gt; ';
   h += '<span>' + typeName + '</span> &gt; ';
