@@ -3303,8 +3303,17 @@ CATEGORIES[0].content = "# CAT-01: Injection Attacks\n\n> **Domain:** Web Applic
 var SUBTYPE_ROUTES = {
   'cat-01:SQL Injection': 'sqli-classic-inband'
 };
+var SUBTYPE_CHILDREN = {
+  'cat-01:SQL Injection': [
+    {name: 'Classic / In-Band', slug: 'sqli-classic-inband', done: true},
+    {name: 'Boolean-Based Blind', slug: 'sqli-blind-boolean', done: true}
+  ]
+};
 function getSubtypeSlug(catSlug, typeName) {
   return SUBTYPE_ROUTES[catSlug + ':' + typeName] || null;
+}
+function getSubtypeChildren(catSlug, typeName) {
+  return SUBTYPE_CHILDREN[catSlug + ':' + typeName] || null;
 }
 
 /* ===== SHIELD.IO STRIPPING (FIX 2) ===== */
@@ -3485,8 +3494,17 @@ function buildSidebar() {
     html += '</div>';
     html += '<div class="sidebar-sub-items" id="sub-' + cat.slug + '">';
     for (var j = 0; j < cat.types.length; j++) {
+      var children = getSubtypeChildren(cat.slug, cat.types[j]);
       var subSlug = getSubtypeSlug(cat.slug, cat.types[j]);
-      if (subSlug) {
+      if (children && children.length > 0) {
+        html += '<div class="sidebar-sub-item" style="cursor:pointer;color:var(--text);font-weight:500;" onclick="navigateTo(\'' + subSlug + '\')">' + escapeHtml(cat.types[j]) + '</div>';
+        for (var k = 0; k < children.length; k++) {
+          var ch = children[k];
+          html += '<div class="sidebar-sub-item" style="cursor:pointer;padding-left:48px;font-size:10px;" onclick="navigateTo(\'' + ch.slug + '\')">';
+          html += (ch.done ? '<span style="color:#33cc33;margin-right:4px;">&#10003;</span>' : '<span style="color:var(--text-dim);margin-right:4px;">&#9675;</span>');
+          html += escapeHtml(ch.name) + '</div>';
+        }
+      } else if (subSlug) {
         html += '<div class="sidebar-sub-item" style="cursor:pointer;" onclick="navigateTo(\'' + subSlug + '\')">' + escapeHtml(cat.types[j]) + '</div>';
       } else {
         html += '<div class="sidebar-sub-item">' + escapeHtml(cat.types[j]) + '</div>';
