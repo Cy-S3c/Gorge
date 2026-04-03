@@ -339,18 +339,42 @@ PAGES.tools = "# Tools Index\n\n> All offensive security tools referenced in thi
 
 PAGES.labs = "# Lab Environments\n\n> Practice environments for every attack category in this database. No theory without practice.\n\n---\n\n## Online Platforms (No Setup Required)\n\n| Platform | Best For | URL | Cost |\n|---------|---------|-----|------|\n| **PortSwigger Web Security Academy** | Web attacks -- all categories | [portswigger.net/web-security](https://portswigger.net/web-security) | Free |\n| **HackTheBox** | Real-world machines, CTF-style | [hackthebox.com](https://hackthebox.com) | Free / Pro |\n| **TryHackMe** | Guided learning paths, beginner-friendly | [tryhackme.com](https://tryhackme.com) | Free / Pro |\n| **PentesterLab** | Web-specific, badge-based | [pentesterlab.com](https://pentesterlab.com) | Free / Pro |\n| **OWASP WebGoat** | Deliberately insecure -- all OWASP top 10 | [webgoat.github.io](https://webgoat.github.io) | Free |\n\n---\n\n## Self-Hosted Vulnerable Apps\n\n| App | Covers | Setup |\n|-----|--------|-------|\n| **DVWA** | SQLi, XSS, CSRF, File inclusion, Command injection | `docker run -p 80:80 vulnerables/web-dvwa` |\n| **bWAPP** | 100+ vulnerabilities across all categories | `docker run -p 80:80 raesene/bwapp` |\n| **WebGoat** | OWASP top 10, injection, auth, access control | `docker run -p 8080:8080 webgoat/goat-and-wolf` |\n| **Mutillidae** | OWASP top 10, injection-heavy | `docker run -p 80:80 citizenstig/nowasp` |\n| **NodeGoat** | Node.js-specific OWASP top 10 | `git clone github.com/OWASP/NodeGoat` |\n\n---\n\n## Attack-Specific Labs\n\n### SQL Injection\n- [PortSwigger SQLi Labs](https://portswigger.net/web-security/sql-injection) -- 18 labs from basic to blind to OOB\n- [SQLi-labs](https://github.com/Audi-1/sqli-labs) -- 75 levels, MySQL-focused\n\n### SSTI\n- [PortSwigger SSTI Labs](https://portswigger.net/web-security/server-side-template-injection)\n- [TryHackMe -- SSTI](https://tryhackme.com/room/learnssti)\n\n### SSRF\n- [PortSwigger SSRF Labs](https://portswigger.net/web-security/ssrf)\n\n### XSS\n- [PortSwigger XSS Labs](https://portswigger.net/web-security/cross-site-scripting) -- 30+ labs\n- [XSS Game (Google)](https://xss-game.appspot.com)\n\n### HTTP Request Smuggling\n- [PortSwigger Request Smuggling Labs](https://portswigger.net/web-security/request-smuggling)\n\n### Deserialization\n- [PortSwigger Deserialization Labs](https://portswigger.net/web-security/deserialization)\n\n### OAuth / JWT\n- [PortSwigger OAuth Labs](https://portswigger.net/web-security/oauth)\n- [PortSwigger JWT Labs](https://portswigger.net/web-security/jwt)\n\n---\n\n## CTF Platforms\n\n| Platform | Style | URL |\n|---------|-------|-----|\n| CTFtime | Event tracker | [ctftime.org](https://ctftime.org) |\n| picoCTF | Educational | [picoctf.org](https://picoctf.org) |\n| pwn.college | Systematic | [pwn.college](https://pwn.college) |\n\n---\n\n## Bug Bounty Programs (Real-World Practice)\n\n| Program | Platform |\n|---------|----------|\n| HackerOne Public Programs | [hackerone.com](https://hackerone.com/bug-bounty-programs) |\n| Bugcrowd Public Programs | [bugcrowd.com/programs](https://bugcrowd.com/programs) |\n| Intigriti Public Programs | [intigriti.com](https://app.intigriti.com/programs) |\n\n> Always read program scope and rules before testing. Testing outside scope is illegal.";
 
-PAGES.sqli_blind_boolean = `<p>
-<span style="background:#dc3545;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CRITICAL</span>&nbsp;
-<span style="background:#6c757d;color:#fff;padding:2px 8px;border-radius:3px;">CWE-89</span>&nbsp;
-<span style="background:#6c757d;color:#fff;padding:2px 8px;border-radius:3px;">CAPEC-7</span>&nbsp;
-<span style="background:#dc3545;color:#fff;padding:2px 8px;border-radius:3px;">CVSS 9.8</span>&nbsp;
-<span style="background:#fd7e14;color:#fff;padding:2px 8px;border-radius:3px;">OWASP A05:2025</span>&nbsp;
-<span style="background:#17a2b8;color:#fff;padding:2px 8px;border-radius:3px;">CWE Top 25: 2019-2025</span>
+PAGES.sqli_blind_boolean = `
+<p>
+<span style="background:#d32f2f;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CRITICAL</span>&nbsp;
+<span style="background:#f57c00;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CWE-89</span>&nbsp;
+<span style="background:#7b1fa2;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CAPEC-7</span>&nbsp;
+<span style="background:#d32f2f;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CVSS 9.8</span>&nbsp;
+<span style="background:#1565c0;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">OWASP A05:2025</span>
 </p>
 
 # Boolean-Based Blind SQL Injection
 
 **CAT-01 > SQL Injection > Boolean-Based Blind**
+
+---
+
+## Table of Contents
+
+1. [Overview](#overview)
+2. [Understanding From Zero](#understanding-from-zero)
+3. [Attack Surface Identification](#attack-surface-identification)
+4. [How It Works](#how-it-works)
+5. [Detection and Validation](#detection-and-validation)
+6. [Beginner Lab Walkthrough](#beginner-lab-walkthrough)
+7. [Techniques](#techniques)
+8. [Tactics (MITRE ATT&CK Mapping)](#tactics-mitre-attck-mapping)
+9. [Tools](#tools)
+10. [Payload Crafting](#payload-crafting)
+11. [Exploitation (Step-by-Step)](#exploitation-step-by-step)
+12. [Detection Evasion](#detection-evasion)
+13. [Variations and Edge Cases](#variations-and-edge-cases)
+14. [Modern Stack Specifics](#modern-stack-specifics)
+15. [Real-World Examples](#real-world-examples)
+16. [Skill Progression Path](#skill-progression-path)
+17. [Defensive Countermeasures](#defensive-countermeasures)
+18. [References](#references)
+19. [AI Agent Metadata](#ai-agent-metadata)
 
 ---
 
@@ -7195,18 +7219,44 @@ client.query('SELECT * FROM products WHERE category = $1', [userInput]);
 `;
 
 
-PAGES.sqli_time_blind = `<p>
-<span style="background:#dc3545;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CRITICAL</span>&nbsp;
-<span style="background:#6c757d;color:#fff;padding:2px 8px;border-radius:3px;">CWE-89</span>&nbsp;
-<span style="background:#6c757d;color:#fff;padding:2px 8px;border-radius:3px;">CAPEC-7</span>&nbsp;
-<span style="background:#dc3545;color:#fff;padding:2px 8px;border-radius:3px;">CVSS 9.8</span>&nbsp;
-<span style="background:#fd7e14;color:#fff;padding:2px 8px;border-radius:3px;">OWASP A05:2025</span>&nbsp;
-<span style="background:#17a2b8;color:#fff;padding:2px 8px;border-radius:3px;">CWE Top 25: 2019-2025</span>
+PAGES.sqli_time_blind = `
+<p>
+<span style="background:#d32f2f;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CRITICAL</span>&nbsp;
+<span style="background:#f57c00;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CWE-89</span>&nbsp;
+<span style="background:#7b1fa2;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CAPEC-7</span>&nbsp;
+<span style="background:#d32f2f;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CVSS 9.8</span>&nbsp;
+<span style="background:#1565c0;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">OWASP A05:2025</span>
 </p>
 
 # Time-Based Blind SQL Injection
 
 **CAT-01 > SQL Injection > Time-Based Blind**
+
+---
+
+## Table of Contents
+
+1. [Overview](#overview)
+2. [Understanding From Zero](#understanding-from-zero)
+3. [Attack Surface Identification](#attack-surface-identification)
+4. [How It Works](#how-it-works)
+5. [Detection & Validation](#detection--validation)
+6. [Beginner Lab Walkthrough](#beginner-lab-walkthrough)
+7. [Techniques](#techniques)
+8. [Tactics (MITRE ATT&CK)](#tactics-mitre-attck)
+9. [Tools](#tools)
+10. [Network Jitter Mitigation](#network-jitter-mitigation)
+11. [Payload Crafting](#payload-crafting)
+12. [Exploitation (10 Steps)](#exploitation-10-steps)
+13. [Post-Exploitation](#post-exploitation)
+14. [Detection Evasion](#detection-evasion)
+15. [Variations & Edge Cases](#variations--edge-cases)
+16. [Modern Stack Specifics](#modern-stack-specifics)
+17. [Real-World Examples](#real-world-examples)
+18. [Skill Progression Path](#skill-progression-path)
+19. [Defensive Countermeasures](#defensive-countermeasures)
+20. [References](#references)
+21. [AI Agent Metadata](#ai-agent-metadata)
 
 ---
 
@@ -8998,17 +9048,41 @@ Attackers use round delay values (1s, 3s, 5s, 10s). Response times clustered aro
 
 PAGES.sqli_oob = `
 <p>
-<span style="background:#dc3545;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CRITICAL</span>&nbsp;
-<span style="background:#6c757d;color:#fff;padding:2px 8px;border-radius:3px;">CWE-89</span>&nbsp;
-<span style="background:#6c757d;color:#fff;padding:2px 8px;border-radius:3px;">CAPEC-7</span>&nbsp;
-<span style="background:#dc3545;color:#fff;padding:2px 8px;border-radius:3px;">CVSS 9.8</span>&nbsp;
-<span style="background:#fd7e14;color:#fff;padding:2px 8px;border-radius:3px;">OWASP A05:2025</span>&nbsp;
-<span style="background:#17a2b8;color:#fff;padding:2px 8px;border-radius:3px;">CWE Top 25: 2019-2025</span>
+<span style="background:#d32f2f;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CRITICAL</span>&nbsp;
+<span style="background:#f57c00;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CWE-89</span>&nbsp;
+<span style="background:#7b1fa2;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CAPEC-7</span>&nbsp;
+<span style="background:#d32f2f;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">CVSS 9.8</span>&nbsp;
+<span style="background:#1565c0;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;">OWASP A05:2025</span>
 </p>
 
 # Out-of-Band (OOB) SQL Injection
 
 **CAT-01 > SQL Injection > Out-of-Band**
+
+---
+
+## Table of Contents
+
+1. [Overview](#overview)
+2. [Understanding From Zero](#understanding-from-zero)
+3. [Attack Surface Identification](#attack-surface-identification)
+4. [How It Works](#how-it-works)
+5. [Detection and Validation](#detection-and-validation)
+6. [Beginner Lab Walkthrough](#beginner-lab-walkthrough)
+7. [Techniques](#techniques)
+8. [Tactics (MITRE ATT&CK Mapping)](#tactics-mitre-attck-mapping)
+9. [Tools](#tools)
+10. [Payload Crafting](#payload-crafting)
+11. [Exploitation (10 Steps: OOB Confirmation to Full Data Dump)](#exploitation-10-steps-oob-confirmation-to-full-data-dump)
+12. [Post-Exploitation](#post-exploitation)
+13. [Detection Evasion](#detection-evasion)
+14. [Variations and Edge Cases](#variations-and-edge-cases)
+15. [Modern Stack Specifics](#modern-stack-specifics)
+16. [Real-World Examples](#real-world-examples)
+17. [Skill Progression Path](#skill-progression-path)
+18. [Defensive Countermeasures](#defensive-countermeasures)
+19. [References](#references)
+20. [AI Agent Metadata](#ai-agent-metadata)
 
 ---
 
